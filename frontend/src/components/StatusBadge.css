@@ -1,0 +1,50 @@
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.85rem;
+  border-radius: var(--radius-full);
+  font-weight: 600;
+  font-size: 0.8rem;
+  letter-spacing: 0.02em;
+  text-transform: capitalize;
+  white-space: nowrap;
+  transition: all 0.2s ease;
+}
+
+.status-badge.size-sm { padding: 0.2rem 0.6rem; font-size: 0.7rem; }
+.status-badge.size-lg { padding: 0.4rem 1rem; font-size: 0.9rem; }
+
+/* State Colors */
+.status-active { background: hsla(142, 71%, 45%, 0.15); color: hsl(142, 71%, 45%); border: 1px solid hsla(142, 71%, 45%, 0.3); }
+.status-cooling { background: hsla(199, 89%, 48%, 0.15); color: hsl(199, 89%, 48%); border: 1px solid hsla(199, 89%, 48%, 0.3); }
+.status-dormant { background: hsla(215, 16%, 47%, 0.15); color: hsl(215, 16%, 57%); border: 1px solid hsla(215, 16%, 47%, 0.3); }
+.status-reactivated { background: hsla(271, 76%, 53%, 0.15); color: hsl(271, 76%, 63%); border: 1px solid hsla(271, 76%, 53%, 0.3); }
+.status-banned { background: hsla(0, 0%, 50%, 0.1); color: hsl(0, 0%, 55%); border: 1px solid hsla(0, 0%, 50%, 0.2); text-decoration: line-through; }
+.status-healthy { background: hsla(142, 71%, 45%, 0.15); color: hsl(142, 71%, 45%); border: 1px solid hsla(142, 71%, 45%, 0.3); }
+.status-quarantine { background: hsla(35, 92%, 53%, 0.15); color: hsl(35, 92%, 53%); border: 1px solid hsla(35, 92%, 53%, 0.3); }
+.status-pending { background: hsla(35, 92%, 53%, 0.15); color: hsl(35, 92%, 53%); border: 1px solid hsla(35, 92%, 53%, 0.3); }
+.status-resolved { background: hsla(142, 71%, 45%, 0.1); color: hsl(142, 71%, 55%); border: 1px solid hsla(142, 71%, 45%, 0.2); }
+.status-critical { background: hsla(348, 83%, 47%, 0.2); color: hsl(348, 83%, 57%); border: 1px solid hsla(348, 83%, 47%, 0.4); }
+.status-high { background: hsla(20, 90%, 50%, 0.15); color: hsl(20, 90%, 55%); border: 1px solid hsla(20, 90%, 50%, 0.3); }
+.status-medium { background: hsla(45, 93%, 47%, 0.15); color: hsl(45, 93%, 55%); border: 1px solid hsla(45, 93%, 47%, 0.3); }
+.status-low { background: hsla(199, 89%, 48%, 0.1); color: hsl(199, 89%, 58%); border: 1px solid hsla(199, 89%, 48%, 0.2); }
+.status-default { background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--glass-border); }
+
+/* Pulse dot */
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.status-badge.pulse .status-dot {
+  animation: statusPulse 2s infinite;
+}
+
+@keyframes statusPulse {
+  0% { box-shadow: 0 0 0 0 currentColor; opacity: 1; }
+  70% { box-shadow: 0 0 0 6px transparent; opacity: 0.7; }
+  100% { box-shadow: 0 0 0 0 transparent; opacity: 1; }
+}

@@ -1,0 +1,126 @@
+.evidence-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  height: calc(100vh - 4rem);
+}
+
+.evidence-toolbar {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.evidence-toolbar .search-bar {
+  flex: 1;
+  min-width: 280px;
+}
+
+.platform-filters {
+  display: flex;
+  gap: 0.4rem;
+}
+
+/* List + Detail layout */
+.evidence-layout {
+  display: grid;
+  grid-template-columns: 1fr 520px;
+  gap: 1.5rem;
+  flex: 1;
+  min-height: 0;
+}
+
+.evidence-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  overflow-y: auto;
+  padding-right: 0.5rem;
+}
+
+.evidence-item {
+  padding: 1.25rem;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  transition: all 0.2s ease;
+  border: 1px solid transparent;
+}
+.evidence-item:hover { transform: translateX(4px); }
+.evidence-item.selected {
+  border-color: var(--accent-blue);
+  box-shadow: var(--shadow-glow);
+}
+
+.ev-item-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.ev-item-classification {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.ev-item-meta {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+
+.ev-item-group {
+  color: var(--accent-blue);
+  font-weight: 500;
+}
+
+.ev-item-case {
+  color: var(--text-muted);
+}
+
+.ev-item-footer {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.ev-item-reviewer {
+  margin-left: auto;
+  font-style: italic;
+}
+
+/* Detail panel */
+.evidence-detail-panel {
+  position: sticky;
+  top: 0;
+  max-height: calc(100vh - 12rem);
+  overflow-y: auto;
+}
+
+.evidence-detail-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  height: 400px;
+  color: var(--text-muted);
+  padding: 2rem;
+  text-align: center;
+}
+
+.evidence-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  height: 300px;
+  color: var(--text-muted);
+}

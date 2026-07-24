@@ -1,0 +1,126 @@
+.evidence-viewer {
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  max-width: 520px;
+}
+
+.ev-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.ev-header h3 {
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.ev-id {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.ev-screenshot-area {
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--glass-border);
+  background: var(--bg-primary);
+}
+
+.ev-screenshot {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.ev-screenshot-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  height: 200px;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.ev-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.ev-detail-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.88rem;
+}
+
+.ev-detail-row svg {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.ev-label {
+  color: var(--text-muted);
+  min-width: 100px;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.ev-value {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.ev-link {
+  color: var(--accent-blue);
+  text-decoration: none;
+  word-break: break-all;
+}
+.ev-link:hover { text-decoration: underline; }
+
+.ev-time {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+}
+
+.ev-trope-box {
+  background: hsla(348, 83%, 47%, 0.08);
+  border: 1px solid hsla(348, 83%, 47%, 0.2);
+  border-radius: var(--radius-md);
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.ev-trope-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--accent-red);
+  font-weight: 600;
+}
+
+.ev-trope-value {
+  color: var(--text-primary);
+  font-size: 0.9rem;
+}
+
+.ev-close-btn {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  padding: 0.65rem 1.25rem;
+  border-radius: var(--radius-md);
+  font-weight: 600;
+  font-size: 0.9rem;
+  transition: all 0.2s ease;
+  align-self: flex-end;
+}
+.ev-close-btn:hover { background: hsla(215, 25%, 35%, 1); color: var(--text-primary); }

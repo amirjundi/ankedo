@@ -1,0 +1,126 @@
+.intelligence {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+.search-bar {
+  position: relative;
+  width: 300px;
+}
+
+.search-icon {
+  position: absolute;
+  left: 1rem;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+}
+
+.search-bar input {
+  width: 100%;
+  padding: 0.75rem 1rem 0.75rem 2.75rem;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-full);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.95rem;
+  transition: all 0.2s ease;
+}
+
+.search-bar input:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 2px hsla(221, 83%, 53%, 0.2);
+}
+
+.table-header {
+  padding: 1.5rem;
+  border-bottom: 1px solid var(--glass-border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.table-header h3 {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.badge-warning {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: hsla(35, 92%, 53%, 0.15);
+  color: hsl(35, 92%, 53%);
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius-full);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.data-table th, .data-table td {
+  padding: 1.25rem 1.5rem;
+  text-align: left;
+  border-bottom: 1px solid var(--glass-border);
+}
+
+.data-table th {
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.data-table tr:hover {
+  background: hsla(210, 40%, 98%, 0.02);
+}
+
+.handle {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.platform-badge.sm {
+  font-size: 0.65rem;
+  padding: 0.15rem 0.5rem;
+}
+.platform-badge.instagram { background: linear-gradient(45deg, #f09433 0%, #e6683c 25%, #dc2743 50%, #cc2366 75%, #bc1888 100%); color: white; }
+
+.offenses {
+  color: var(--accent-red);
+  font-weight: 700;
+  font-family: var(--font-mono);
+}
+
+.last-active {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.status-pill {
+  padding: 0.25rem 0.75rem;
+  border-radius: var(--radius-full);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+.status-pill.active { background: hsla(142, 71%, 45%, 0.15); color: var(--accent-green); }
+.status-pill.banned { background: var(--bg-tertiary); color: var(--text-muted); text-decoration: line-through; }
+
+.btn-view {
+  background: transparent;
+  color: var(--accent-blue);
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+.btn-view:hover {
+  color: var(--accent-blue-hover);
+  text-decoration: underline;
+}
