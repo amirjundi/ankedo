@@ -74,10 +74,33 @@ class CommitteeOrchestrator:
             # An explicit slur must never be dropped at triage, regardless of topic
             # (FR-CL-4). Triage runs on the cheapest model; the dictionary overrides it.
             explicit = [h for h in lexicon_hits if h.get("is_explicit")]
-            if not explicit:
+
+            # A fired or candidate trope overrides the drop too. The deterministic
+            # layer above already did the work of matching this comment against the
+            # trope dictionary, and the result was computed and then ignored unless a
+            # lexicon term happened to hit as well.
+            #
+            # That gap is the whole point of the trope layer. Mockery — the form most
+            # reported in the Duhok survey — rarely contains a term any dictionary
+            # holds; the pattern is what identifies it. So the items tropes exist to
+            # catch were exactly the items triage could discard unchallenged, and a
+            # cheap model's "not worth looking at" was final for them.
+            #
+            # Candidates count, not only fired patterns: a candidate is a pattern that
+            # matched but whose activation topic was not confirmed, which is a question
+            # for the specialist rather than an answer. Escalating costs one specialist
+            # call; dropping loses the item silently, and the operator's standing
+            # instruction is that a miss is worse than an over-flag.
+            if not explicit and not fired and not candidates:
                 log.info("Dropped at triage")
                 return _result("benign", 0.0, False, trace, severity=0)
-            log.info("Triage overridden by explicit lexicon hit", terms=len(explicit))
+
+            log.info(
+                "Triage overridden",
+                explicit_terms=len(explicit),
+                tropes_fired=len(fired),
+                trope_candidates=len(candidates),
+            )
 
         # --- specialist -------------------------------------------------------
         specialist = await self.specialist.evaluate(bundle, lexicon_hits, fired, candidates)

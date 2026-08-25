@@ -165,6 +165,45 @@ async def test_triage_drop_is_honoured_without_explicit_hit(session):
     assert "specialist" not in llm.prompts, "a clear item should not cost a specialist call"
 
 
+async def test_triage_cannot_drop_a_fired_trope(session):
+    """A fired trope escalates even when triage says the item is not worth looking at.
+
+    The trope layer exists for hate that carries no dictionary term — mockery, the
+    commonest form in the survey data, usually looks like ordinary words. Requiring a
+    lexicon hit to survive triage meant the cheapest model had the last word on
+    exactly the items tropes were built to catch.
+    """
+    llm = FakeLLM(triage=False)
+    result = await _orchestrator(session, llm).run(_bundle())
+
+    assert [t["trope_id"] for t in result["trace"]["tropes_fired"]] == ["yazidi-devil-worship"]
+    assert "specialist" in llm.prompts, "a fired trope must reach the specialist"
+    assert result["verdict"] == "hate"
+
+
+async def test_triage_cannot_drop_a_trope_candidate(session):
+    """A candidate is an unresolved question, not a cleared item.
+
+    The pattern matched but its activation topic was not confirmed. Escalating costs
+    one specialist call; dropping loses the item with no record that anything matched.
+    """
+    llm = FakeLLM(
+        triage=False,
+        specialist=SpecialistDecision(
+            verdict=Verdict.BENIGN, confidence=0.9, category=Category.NONE,
+            target_group=None, severity=0, relies_on_context=False,
+            rationale="ordinary religious phrase on an unrelated post",
+        ),
+    )
+    result = await _orchestrator(session, llm).run(
+        _bundle(post="شاهدوا هذا الثعبان الضخم في الحديقة", groups=())
+    )
+
+    assert result["trace"]["tropes_fired"] == []
+    assert [t["trope_id"] for t in result["trace"]["trope_candidates"]] == ["yazidi-devil-worship"]
+    assert "specialist" in llm.prompts, "a trope candidate must reach the specialist"
+
+
 async def test_disagreement_lowers_confidence_into_the_review_band(session):
     """FR-CL-11: never silently resolve a disagreement — send it to a human."""
     llm = FakeLLM(critic_agrees=False)

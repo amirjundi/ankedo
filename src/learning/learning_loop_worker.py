@@ -51,13 +51,39 @@ class LearningLoopWorker:
         }
         
         try:
-            passed = await self.evaluator.run_evaluation(proposed_changes)
-            if passed:
-                log.info("Proposed changes passed eval gate, applying to production")
-                for lex in proposed_lexicon:
-                    self.session.add(lex)
-                for trope in proposed_tropes:
-                    self.session.add(trope)
-                await self.session.commit()
-        except Exception as e:
-            log.error("Proposed changes failed eval gate", error=str(e))
+            result = await self.evaluator.run_evaluation(proposed_changes)
+        except Exception as exc:
+            log.error("Eval gate could not judge the proposal", error=str(exc))
+            return
+
+        if not result.passed:
+            log.info(
+                "Proposal rejected at the eval gate",
+                summary=result.summary,
+                groups=[r.group for r in result.regressions],
+            )
+            return
+
+        # Passing the gate makes a proposal worth a curator's time. It does not make
+        # it a detection rule.
+        #
+        # This used to session.add() and commit() here, which is the agent rewriting
+        # the rules it is judged by — the thing FR-LE-1 exists to prevent — and it sat
+        # behind a gate that always returned True. The gate is real now, but a gate
+        # measures regression against a gold set; it cannot tell whether a term is
+        # actually a slur, whether it is reclaimed in-community usage, or whether it
+        # is a word for a community rather than a word against one. Only a curator
+        # can, and the lexicon is human-authored by design: curators fill the workbook,
+        # it imports to the platform, and the agent pulls it back down.
+        #
+        # ponytail: held, not submitted. The platform's lexicon-gaps endpoint is being
+        # built in the other repo; until it exists there is nowhere to send these, and
+        # holding them is the behaviour that cannot corrupt the dictionary. Wire the
+        # submission here when the endpoint lands.
+        log.info(
+            "Proposal passed the eval gate — holding for curator review",
+            summary=result.summary,
+            lexicon=len(proposed_lexicon),
+            tropes=len(proposed_tropes),
+            note="not applied; awaiting the platform lexicon-gaps endpoint",
+        )

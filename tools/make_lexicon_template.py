@@ -48,8 +48,27 @@ CATEGORIES = [
     for c in sorted(_CATS, key=lambda c: -(c.reported_by or 0))
     if c.slug != "none"
 ]
+
+# counter_speech and news_reporting are labels for things that are NOT hate speech.
+# They belong in EXAMPLES, where a curator labels what a post actually is, and are
+# incoherent in a dictionary of hate terms — a lexicon entry categorised
+# "news_reporting" is a term that is hateful except when it is journalism, which is
+# what never_flag_when is for.
+NOT_HATE_CATEGORIES = ["counter_speech", "news_reporting"]
+HATE_CATEGORIES = [c for c in CATEGORIES if c not in NOT_HATE_CATEGORIES]
+
 VISUAL_FORMS = [c.slug for c in sorted(_VIS, key=lambda c: -(c.reported_by or 0))]
+
+# The language the TERM is written in — not the languages the platform serves.
+# Hate speech against these communities arrives overwhelmingly in Arabic and
+# Kurdish; a slur aimed at Assyrians is written in Arabic (نسطوري below), not in
+# Syriac. Add a language here when a term is actually recorded in it.
 LANGUAGES = ["ar", "ku"]
+
+# REFERENCE documents exactly these four, and never_flag_when was free text, so a
+# typo produced a context gate that silently never matched.
+NEVER_FLAG_WHEN = ["news_quotation", "academic", "counter_speech", "reclaimed"]
+
 YES_NO = ["yes", "no"]
 
 
@@ -85,6 +104,40 @@ def _validate(ws, column_letter, options, first=2, last=500):
     )
     validation.error = "Pick a value from the list."
     validation.errorTitle = "Not a valid value"
+    ws.add_data_validation(validation)
+    validation.add(f"{column_letter}{first}:{column_letter}{last}")
+
+
+def _validate_multi(ws, column_letter, options, label, first=2, last=500):
+    """Warn on an unrecognised value in a comma-separated column, without blocking it.
+
+    target_groups and never_flag_when hold several values at once — the shipped
+    examples include "yazidi, christian-iraqi". A list validation matches the whole
+    cell, so it would reject every multi-value entry the sheet is designed to accept.
+    A hard dropdown here would be worse than the free text it replaced.
+
+    The problem being solved is the typo, not the second value: a misspelled slug
+    produces a group that silently never matches. So this shows the valid slugs on
+    entry and warns on anything unrecognised, while still letting the curator commit
+    the cell — which is also the escape hatch for a group the list does not have yet.
+    """
+    validation = DataValidation(
+        type="list",
+        formula1=f'"{",".join(options)}"',
+        allow_blank=True,
+        showErrorMessage=True,
+        errorStyle="warning",
+        showInputMessage=True,
+    )
+    validation.promptTitle = label
+    validation.prompt = (
+        "Separate several with commas.\n\nValid values:\n" + ", ".join(options)
+    )
+    validation.errorTitle = "Check the spelling"
+    validation.error = (
+        "That is not one of the known values. Several values separated by commas are "
+        "fine — click Yes to keep what you typed.\n\nValid values:\n" + ", ".join(options)
+    )
     ws.add_data_validation(validation)
     validation.add(f"{column_letter}{first}:{column_letter}{last}")
 
@@ -225,9 +278,13 @@ def build_lexicon(wb: Workbook) -> None:
          "EXAMPLE — duhok-survey row 7 (BENIGN unless post concerns the group)", "—"],
     ])
 
+    _validate_multi(ws, "B", TARGET_GROUPS, "الفئة المستهدفة · target_groups")
     _validate(ws, "C", LANGUAGES)
-    _validate(ws, "D", CATEGORIES)
+    # HATE_CATEGORIES, not CATEGORIES: counter_speech and news_reporting are not
+    # things a term in a hate-speech dictionary can be.
+    _validate(ws, "D", HATE_CATEGORIES)
     _validate(ws, "F", YES_NO)
+    _validate_multi(ws, "H", NEVER_FLAG_WHEN, "لا تُعلّم عندما · never_flag_when")
     _validate(ws, "I", YES_NO)
 
     notes = {
@@ -261,6 +318,10 @@ def build_tropes(wb: Workbook) -> None:
         ("مثال دفاع", "counter_speech_example", 34, ""),
         ("الخطورة ١-١٠", "severity_weight *", 12, "judgement"),
         ("بصري؟", "is_visual", 10, ""),
+        # Both default to yes on the platform. Without a column the curator cannot
+        # say otherwise and, worse, never learns the question was there to ask.
+        ("يحتاج فئة مستهدفة؟", "requires_target_group", 14, ""),
+        ("النفي يلغيه؟", "negation_cancels", 13, ""),
         ("المصدر", "notes / source *", 26, "required"),
     ]
     _style_header(ws, columns)
@@ -274,7 +335,7 @@ def build_tropes(wb: Workbook) -> None:
          "اعوذ بالله من الشيطان الرجيم  ← on a post about a Yazidi ceremony at Lalish",
          "اعوذ بالله من الشيطان الرجيم  ← on a post about a snake in a garden",
          "الإيزيديون ليسوا عبدة الشيطان، هذا افتراء",
-         8, "no", "EXAMPLE — duhok-focus-group row 3"],
+         8, "no", "yes", "yes", "EXAMPLE — duhok-focus-group row 3"],
         ["Collective blame from one individual",
          "Treating one member's act as proof of a trait shared by the whole community.",
          "yazidi, christian-iraqi, kurdish",
@@ -283,7 +344,7 @@ def build_tropes(wb: Workbook) -> None:
          "كل اليزيديين عنصريين لان واحد يزيدي طلع بفيديو وحجا على المسلمين",
          "هذا الشخص تصرف بشكل عنصري",
          "",
-         6, "no", "EXAMPLE — duhok-focus-group row 10"],
+         6, "no", "yes", "yes", "EXAMPLE — duhok-focus-group row 10"],
         ["Not an authentic people",
          "Claims the community is foreign, planted by colonial powers, or has no real history in Iraq.",
          "christian-iraqi",
@@ -292,7 +353,7 @@ def build_tropes(wb: Workbook) -> None:
          "الاشورين دخلاء من قبل البريطانيين وليسو شعوب اصيلة",
          "الآشوريون من أقدم شعوب المنطقة وتاريخهم موثق",
          "",
-         7, "no", "EXAMPLE — duhok-survey row 3"],
+         7, "no", "yes", "yes", "EXAMPLE — duhok-survey row 3"],
         ["Grave and cross desecration",
          "Desecration of Christian graves or the cross, filmed or photographed to circulate.",
          "christian-iraqi",
@@ -301,10 +362,13 @@ def build_tropes(wb: Workbook) -> None:
          "IMAGE: person urinating on a grave marked with a cross",
          "IMAGE: news photograph documenting damage to a cemetery",
          "",
-         9, "yes", "EXAMPLE — duhok-survey column BE"],
+         9, "yes", "yes", "no", "EXAMPLE — duhok-survey column BE"],
     ])
 
+    _validate_multi(ws, "C", TARGET_GROUPS, "الفئة المستهدفة · target_groups")
     _validate(ws, "J", YES_NO)
+    _validate(ws, "K", YES_NO)
+    _validate(ws, "L", YES_NO)
 
     from openpyxl.comments import Comment
 
@@ -316,6 +380,8 @@ def build_tropes(wb: Workbook) -> None:
         "G1": "REQUIRED. The SAME words in a HARMLESS setting.\n\nWithout this, the system flags ordinary religious speech. This is the single most important column in the sheet.",
         "H1": "Someone quoting the insult in order to REJECT it. These must never be flagged.",
         "J1": "yes = appears in images/memes, so a text-only check cannot see it.",
+        "K1": "Leave as yes unless you mean it.\n\nyes = only fires when the post is about one of the target groups above.\nno  = fires regardless of who the post is about.\n\nSay no only for a pattern that is abusive on its face, whoever it names.",
+        "L1": "Leave as yes unless you mean it.\n\nyes = a negation cancels the pattern, so 'الإيزيديون ليسوا عبدة الشيطان' does NOT fire.\nno  = it fires even when negated.\n\nSay no for a pattern that stays abusive when denied — a rhetorical question, or a libel repeated in order to spread it.",
     }
     for ref, text in notes.items():
         ws[ref].comment = Comment(text, "Guide", width=360, height=170)
@@ -383,7 +449,10 @@ def build_examples(wb: Workbook) -> None:
 
     _validate(ws, "C", ["post", "comment"])
     _validate(ws, "G", ["hate", "benign", "ambiguous"])
-    _validate(ws, "H", CATEGORIES + ["counter_speech", "news_reporting"])
+    # CATEGORIES already contains counter_speech and news_reporting; appending them
+    # again put each in the dropdown twice. EXAMPLES is the sheet where a non-hate
+    # label is the right answer, so the full list belongs here.
+    _validate(ws, "H", CATEGORIES)
     _validate(ws, "L", ["hate", "benign", "ambiguous"])
     _validate(ws, "M", ["hate", "benign", "ambiguous"])
     _validate(ws, "N", YES_NO)
@@ -402,6 +471,38 @@ def build_examples(wb: Workbook) -> None:
     }
     for ref, text in notes.items():
         ws[ref].comment = Comment(text, "Guide", width=380, height=180)
+
+
+# Worked examples from the Duhok data, for the categories where one is unambiguous.
+_CATEGORY_EXAMPLES = {
+    "slur": "نسطوري",
+    "dehumanization": "عبدة الشيطان",
+    "incitement": "حلال قتلهم",
+    "authenticity_denial": "ليسو شعوب اصيلة",
+    "foreignness": "دخلاء",
+    "collective_accusation": "كل اليزيديين عنصريين",
+}
+
+
+def _category_rows():
+    """Every value the CATEGORY dropdowns offer, with its Arabic gloss.
+
+    REFERENCE used to document four of the thirteen. A curator reading it had no idea
+    what the other nine meant, which is how a 13-item dropdown becomes "pick the one
+    I recognise" — and the survey's own commonest form, mockery, was among the
+    undocumented ones.
+    """
+    by_slug = {c.slug: c for c in _CATS}
+    rows = []
+    for slug in HATE_CATEGORIES:
+        cat = by_slug[slug]
+        rows.append((slug, cat.ar, _CATEGORY_EXAMPLES.get(slug) or cat.note or cat.en))
+    for slug in NOT_HATE_CATEGORIES:
+        cat = by_slug[slug]
+        # Flagged in the sheet itself, because they sit in the same EXAMPLES dropdown
+        # as the hate categories and mean the opposite.
+        rows.append((slug, f"{cat.ar} — ليس خطاب كراهية", f"NOT hate speech. {cat.note}"))
+    return rows
 
 
 def build_reference(wb: Workbook) -> None:
@@ -424,12 +525,7 @@ def build_reference(wb: Workbook) -> None:
             ("bahai", "البهائيون", ""),
             ("kurdish", "الكرد", "also appears as a TARGET in the survey data"),
         ]),
-        ("النوع · CATEGORY", ["value", "المعنى", "مثال · example"], [
-            ("slur", "شتيمة أو لقب مهين", "نسطوري"),
-            ("threat", "تهديد بالأذى", ""),
-            ("dehumanization", "تشبيه بالحيوان أو الشر", "عبدة الشيطان"),
-            ("incitement", "دعوة لإيذائهم", "حلال قتلهم"),
-        ]),
+        ("النوع · CATEGORY", ["value", "المعنى", "مثال · example"], _category_rows()),
         ("الخطورة · SEVERITY", ["1-10", "المعنى", ""], [
             ("1-3", "مسيء", "offensive"),
             ("4-6", "تجريد من الإنسانية", "dehumanizing"),
@@ -466,9 +562,10 @@ def build_reference(wb: Workbook) -> None:
         row += 1
 
 
-def main() -> None:
-    output = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("lexicon_data_entry_template.xlsx")
-
+def build_workbook(output: Path) -> Path:
+    """Build the workbook and save it. Separate from main() so tests can assert on
+    the generated file rather than on the builder's intent — the dropdowns that went
+    missing were all present in someone's intent."""
     wb = Workbook()
     wb.remove(wb.active)
     build_instructions(wb)
@@ -479,6 +576,12 @@ def main() -> None:
 
     output.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output)
+    return output
+
+
+def main() -> None:
+    output = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("lexicon_data_entry_template.xlsx")
+    build_workbook(output)
     print(f"wrote {output}")
 
 
