@@ -44,9 +44,16 @@ _settings = get_settings()
 
 # `allow_origins=["*"]` with credentials enabled would let any site read the
 # dashboard through a logged-in browser. Restricted to configured origins.
+_origins = list(_settings.cors_origins)
+if _settings.extension_enabled and _settings.extension_origin:
+    # The extension's service worker sends chrome-extension://<id> as its Origin.
+    # Only added when the extension is both enabled and pinned to an id — a blank
+    # setting must not widen CORS to every extension the operator has installed.
+    _origins.append(_settings.extension_origin)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_settings.cors_origins,
+    allow_origins=_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
@@ -64,6 +71,14 @@ app.include_router(evidence_router, dependencies=_protected)
 app.include_router(reports_router, dependencies=_protected)
 app.include_router(notifications_router, dependencies=_protected)
 app.include_router(chat_router, dependencies=_protected)
+
+# Optional, and off by default. Not mounted rather than mounted-and-idle: these
+# endpoints accept content into the classification pipeline.
+if _settings.extension_enabled:
+    from src.api.extension_router import router as extension_router
+
+    app.include_router(extension_router, dependencies=_protected)
+    log.info("Extension capture endpoints enabled")
 
 @app.on_event("startup")
 async def startup_event():

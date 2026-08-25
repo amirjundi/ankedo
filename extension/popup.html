@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      width: 300px; margin: 0; padding: 14px;
+      font: 13px/1.45 system-ui, -apple-system, Segoe UI, sans-serif;
+      background: Canvas; color: CanvasText;
+    }
+    h1 { font-size: 14px; margin: 0 0 2px; }
+    .sub { opacity: .65; font-size: 12px; margin-bottom: 12px; }
+    button {
+      width: 100%; padding: 9px; font: inherit; font-weight: 600;
+      border: 0; border-radius: 6px; background: #1f6feb; color: #fff; cursor: pointer;
+    }
+    button:disabled { opacity: .55; cursor: default; }
+    .msg { margin-top: 10px; padding: 8px; border-radius: 6px; font-size: 12px; white-space: pre-wrap; }
+    .ok { background: rgba(46,160,67,.15); }
+    .err { background: rgba(248,81,73,.15); }
+    details { margin-top: 12px; font-size: 12px; }
+    label { display: block; margin: 8px 0 3px; opacity: .8; }
+    input {
+      width: 100%; box-sizing: border-box; padding: 6px; font: inherit;
+      border: 1px solid rgba(128,128,128,.4); border-radius: 5px;
+      background: Field; color: FieldText;
+    }
+    .save { margin-top: 8px; background: #444; }
+  </style>
+</head>
+<body>
+  <h1>AnkEdo Capture</h1>
+  <div class="sub">Sends the post you are viewing to your local agent.</div>
+
+  <button id="capture">Capture this post</button>
+  <div id="msg" class="msg" hidden></div>
+
+  <details id="settings">
+    <summary>Agent settings</summary>
+    <label for="endpoint">Agent address</label>
+    <input id="endpoint" type="text" placeholder="http://127.0.0.1:8000" />
+    <label for="token">ADMIN_API_TOKEN</label>
+    <input id="token" type="password" placeholder="from your .env" />
+    <button class="save" id="save">Save</button>
+  </details>
+
+  <script src="popup.js"></script>
+</body>
+</html>

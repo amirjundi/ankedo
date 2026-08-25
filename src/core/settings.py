@@ -182,6 +182,15 @@ class AgentSettings(BaseSettings):
     # -----------------------------------------------------------------------
     # Vision browser
     # -----------------------------------------------------------------------
+    # The Chrome extension is optional and off by default. Its endpoints accept
+    # content into the classification pipeline, so they stay unmounted rather than
+    # merely unused on an installation that does not want it — an endpoint nobody
+    # knows is there is the one nobody notices being called.
+    extension_enabled: bool = Field(default=False)
+    # chrome-extension://<id> of the installed copy. Empty accepts any extension
+    # origin, which is only appropriate while developing against an unpacked build.
+    extension_origin: Optional[str] = Field(default=None)
+
     browser_headless: bool = Field(default=True)
 
     # Playwright refuses to download a browser for a distro its build registry does
