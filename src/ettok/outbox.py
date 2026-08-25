@@ -14,6 +14,7 @@ retrying creates a second report about the same person.
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 import structlog
@@ -28,6 +29,10 @@ log = structlog.get_logger()
 # Beyond this an item is almost certainly malformed rather than unlucky, and retrying
 # it forever would block the queue behind it.
 MAX_ATTEMPTS = 8
+
+# One drain at a time within a process. `ankedo agent run` and a manual `platform`
+# command could otherwise overlap and send the same item twice.
+_drain_lock = asyncio.Lock()
 
 
 async def enqueue(
@@ -59,7 +64,21 @@ async def drain(session: AsyncSession, client: EttokClient, limit: int = 50) -> 
     Stops the whole drain on an auth failure rather than marking items failed: a
     revoked key is not the items' fault, and burning through the queue would waste
     every one of their attempts on a problem only a human can fix.
+
+    Concurrency: guarded by a process-level lock so two drains cannot send the same
+    item. The Idempotency-Key means a double send would not create duplicate reports
+    on the platform, but relying on that alone would waste the retry budget and
+    depends on the server honouring the header — which it does not yet.
     """
+    if _drain_lock.locked():
+        log.debug("Drain already in progress, skipping")
+        return {"sent": 0, "failed": 0, "queued": 0, "skipped": True}
+
+    async with _drain_lock:
+        return await _drain_locked(session, client, limit)
+
+
+async def _drain_locked(session: AsyncSession, client: EttokClient, limit: int) -> dict:
     items = await pending(session, limit)
     sent = failed = 0
 

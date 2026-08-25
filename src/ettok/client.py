@@ -202,8 +202,10 @@ class EttokClient:
             # In memory the new key still works for this run; a restart would revert
             # to the old one, so this needs a human before the overlap window closes.
             log.error(
-                "Key rotated but .env could not be written — this run is fine, "
-                "the next restart will use the old key",
+                "Key rotated but .env could not be written. This run continues on "
+                "the new key, but the file still holds the old one — so it will work "
+                "until the agent is restarted, then fail with 401 once the old key is "
+                "revoked. Write the new key to .env before restarting.",
                 error=str(exc),
             )
 

@@ -130,6 +130,37 @@ def _validate_api_key(provider_id: str, api_key: str, base_url: str | None = Non
     return False
 
 
+def _enrol_with_code(base_url: str, agent_id: str) -> str:
+    """Redeem a pairing code, retrying a typo without restarting the wizard.
+
+    Three attempts: a code read over a phone line gets mistyped, and forcing a
+    restart of the whole wizard for a wrong character is how operators give up and
+    ask for the raw key instead — which is the thing this exists to avoid.
+    """
+    from src.ettok.enrollment import EnrollmentError, redeem
+
+    for attempt in range(3):
+        code = Prompt.ask("  Pairing code")
+        if not code.strip():
+            return ""
+
+        console.print("  [dim]Redeeming...[/]", end=" ")
+        try:
+            result = redeem(base_url, code, agent_id)
+        except EnrollmentError as exc:
+            console.print(f"[red]✗ {exc}[/]")
+            if attempt < 2 and Confirm.ask("  Try again?", default=True):
+                continue
+            return ""
+
+        console.print("[green]✓ enrolled[/]")
+        if result.get("agent_id") and result["agent_id"] != agent_id:
+            console.print(f"  [dim]Platform assigned agent ID: {result['agent_id']}[/]")
+        return result["agent_key"]
+
+    return ""
+
+
 def _default_agent_id() -> str:
     """Hostname-based, so two agents are distinguishable in the platform's logs.
 
@@ -391,10 +422,26 @@ def run_setup(non_interactive: bool = False, reconfigure: bool = False):
             "  Platform URL",
             default=config.get("ETTOK_BASE_URL") or "https://ettok.net/api/hermes/",
         )
-        agent_key = Prompt.ask("  Agent key", password=True)
         # Hostname rather than a fixed default, so two agents are distinguishable in
         # the platform's logs without anyone configuring it.
         agent_id = Prompt.ask("  Agent ID", default=_default_agent_id())
+
+        console.print(
+            "\n  [bold]How will you authenticate?[/]\n"
+            "  [cyan]1[/] Pairing code  [dim]— short code from the admin (recommended)[/]\n"
+            "  [cyan]2[/] Agent key     [dim]— paste the long key directly[/]\n"
+        )
+        console.print(
+            "  [dim]A pairing code is safe to send over chat: it is single-use and\n"
+            "  expires in minutes. The long-lived key never leaves the platform.[/]\n"
+        )
+        method = Prompt.ask("  Choose", choices=["1", "2"], default="1")
+
+        agent_key = ""
+        if method == "1":
+            agent_key = _enrol_with_code(base_url, agent_id)
+        else:
+            agent_key = Prompt.ask("  Agent key", password=True)
 
         if agent_key:
             console.print("\n  [dim]Verifying...[/]", end=" ")

@@ -64,16 +64,38 @@ class QueueManager:
         )
         result = await self.session.execute(stmt)
         item = result.scalar_one_or_none()
+        if item is None:
+            return None
 
-        if item:
-            item.is_inflight = True
-            item.locked_by_worker = worker_id
-            from datetime import datetime, timezone
-            item.locked_at = datetime.now(timezone.utc).isoformat()
-            self.session.add(item)
-            await self.session.commit()
-            log.debug("Dequeued item", item_id=item.id, stage=stage.value, worker_id=worker_id)
-        
+        # Claim it with a CONDITIONAL update, not a plain assignment.
+        #
+        # SELECT-then-UPDATE is a race: two workers both read the row while
+        # is_inflight is false, both set it true, and the same post is classified
+        # twice — double the LLM spend and two reports about one person. Putting
+        # `is_inflight == False` in the WHERE clause makes the database arbitrate:
+        # exactly one UPDATE matches a row, and the loser sees rowcount 0.
+        from datetime import datetime, timezone
+
+        claim = (
+            update(QueueItem)
+            .where(QueueItem.id == item.id, QueueItem.is_inflight.is_(False))
+            .values(
+                is_inflight=True,
+                locked_by_worker=worker_id,
+                locked_at=datetime.now(timezone.utc).isoformat(),
+            )
+        )
+        claimed = await self.session.execute(claim)
+        await self.session.commit()
+
+        if claimed.rowcount == 0:
+            # Another worker won it between our select and our update. Not an error —
+            # the caller simply asks again.
+            log.debug("Lost claim race", item_id=item.id, worker_id=worker_id)
+            return None
+
+        await self.session.refresh(item)
+        log.debug("Dequeued item", item_id=item.id, stage=stage.value, worker_id=worker_id)
         return item
 
     async def promote(self, item: QueueItem, next_stage: QueueStage) -> None:
