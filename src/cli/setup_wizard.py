@@ -29,21 +29,17 @@ ENV_EXAMPLE = PROJECT_ROOT / ".env.example"
 
 # ── AI Provider Definitions ──────────────────────────────────────────────────
 
-# Gemini only, because that is the only provider the code can actually call:
-# src/classifiers/llm_client.py is built on google-genai (structured output, a fixed
-# seed, and safety filters forced off — none of which is portable to another SDK).
-# The wizard used to offer OpenAI, Anthropic and "custom"; picking one wrote gpt-4o
-# model ids and an OPENAI_API_KEY into .env, and the first classification then died
-# with "no Gemini API key configured". A menu entry is a promise the runtime has to
-# keep, so a provider belongs here only once llm_client speaks it.
-#
-# ponytail: one-provider dict rather than a plugin registry — add the second provider
-# and its adapter together, and grow this then.
+# A menu entry is a promise the runtime has to keep. Both of these have a backend in
+# src/classifiers/llm_client.py; nothing else belongs here until it does. (The wizard
+# used to offer Anthropic and a "custom" endpoint with no adapter behind either —
+# choosing one wrote a config whose first classification died.)
 PROVIDERS = {
     "gemini": {
         "name": "Google Gemini",
         "key_env": "GEMINI_API_KEY",
         "key_prefix": "AIza",
+        "key_url": "https://aistudio.google.com/apikey",
+        "asks_base_url": False,
         # Keep in step with the defaults in src/core/settings.py.
         "models": {
             "triage": "gemini-3.5-flash-lite",
@@ -53,9 +49,37 @@ PROVIDERS = {
             "vision": "gemini-3.6-flash",
             "chat": "gemini-3.6-flash",
         },
-        "validate_url": "https://generativelanguage.googleapis.com/v1beta/models",
+    },
+    "openai": {
+        "name": "OpenAI-compatible",
+        "key_env": "OPENAI_API_KEY",
+        "key_prefix": "sk-",
+        "key_url": "https://platform.openai.com/api-keys",
+        # Same wire format serves OpenRouter, Groq, Together, DeepSeek, Ollama and
+        # LM Studio — the base URL is what picks between them.
+        "asks_base_url": True,
+        "models": {
+            "triage": "gpt-4o-mini",
+            "specialist": "gpt-4o",
+            "critic": "gpt-4o-mini",
+            "target_group": "gpt-4o-mini",
+            "vision": "gpt-4o",
+            "chat": "gpt-4o-mini",
+        },
     },
 }
+
+# Shown when the operator picks the OpenAI-compatible backend, because the base URL
+# is the one field nobody remembers.
+COMPATIBLE_ENDPOINTS = [
+    ("OpenAI", ""),
+    ("OpenRouter", "https://openrouter.ai/api/v1"),
+    ("Groq", "https://api.groq.com/openai/v1"),
+    ("Together", "https://api.together.xyz/v1"),
+    ("DeepSeek", "https://api.deepseek.com/v1"),
+    ("Ollama (local)", "http://localhost:11434/v1"),
+    ("LM Studio (local)", "http://localhost:1234/v1"),
+]
 
 # .env keys for each model role, in the order the wizard shows them.
 MODEL_ENV_KEYS = {
@@ -100,11 +124,22 @@ def _validate_api_key(provider_id: str, api_key: str, base_url: str | None = Non
         console.print("[yellow]⚠ httpx not installed — skipping key validation[/]")
         return True
 
-    url = base_url or PROVIDERS[provider_id]["validate_url"]
+    # Listing models is the cheapest authenticated call — no tokens spent, and it
+    # fails on a revoked key exactly as a generate call would.
     try:
-        # ListModels is the cheapest authenticated call — no tokens spent, and it
-        # fails on a revoked key exactly as generateContent would.
-        resp = httpx.get(url, params={"key": api_key}, timeout=10)
+        if provider_id == "gemini":
+            resp = httpx.get(
+                "https://generativelanguage.googleapis.com/v1beta/models",
+                params={"key": api_key},
+                timeout=10,
+            )
+        else:
+            root = (base_url or "https://api.openai.com/v1").rstrip("/")
+            resp = httpx.get(
+                f"{root}/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=10,
+            )
     except Exception as e:
         console.print(f"[yellow]⚠ Validation request failed: {e}[/]")
         return False
@@ -226,7 +261,12 @@ def _write_env(config: dict[str, str]):
                 lines.append(line)
             elif "=" in stripped:
                 key = stripped.split("=", 1)[0].strip()
-                value = config.get(key, stripped.split("=", 1)[1].strip())
+                template = stripped.split("=", 1)[1].strip()
+                # "AIza..." / "sk-..." are illustrations, not values. Copied through,
+                # they read as a configured key and fail only on the first API call.
+                if template.endswith("..."):
+                    template = ""
+                value = config.get(key, template)
                 lines.append(f"{key}={value}")
                 written.add(key)
             else:
@@ -338,13 +378,22 @@ def run_setup(non_interactive: bool = False, reconfigure: bool = False):
     # ── Non-interactive mode ─────────────────────────────────────────────
     if non_interactive:
         console.print("[cyan]Running in non-interactive mode...[/]")
-        # GEMINI_API_KEY, not OPENAI_API_KEY: the required key is the one the
-        # classifier actually calls with.
-        if not os.environ.get("GEMINI_API_KEY") and not config.get("GEMINI_API_KEY"):
-            console.print("[red]✗ GEMINI_API_KEY is not set[/]")
+        # The required key is whichever one the selected provider calls with — the
+        # old check demanded OPENAI_API_KEY unconditionally, which no backend used.
+        provider_id = (
+            os.environ.get("LLM_PROVIDER") or config.get("LLM_PROVIDER") or "gemini"
+        ).strip().lower()
+        if provider_id not in PROVIDERS:
+            console.print(f"[red]✗ LLM_PROVIDER must be one of {', '.join(PROVIDERS)}[/]")
+            sys.exit(1)
+        config["LLM_PROVIDER"] = provider_id
+
+        key_env = PROVIDERS[provider_id]["key_env"]
+        if not os.environ.get(key_env) and not config.get(key_env):
+            console.print(f"[red]✗ {key_env} is not set[/]")
             console.print(
                 "[dim]Export it before running --non-interactive:[/]\n"
-                "[dim]  export GEMINI_API_KEY=AIza...[/]"
+                f"[dim]  export {key_env}=...[/]"
             )
             sys.exit(1)
 
@@ -352,15 +401,17 @@ def run_setup(non_interactive: bool = False, reconfigure: bool = False):
             upper = key.upper()
             if upper.startswith(("GEMINI_", "OPENAI_", "ANTHROPIC_", "TELEGRAM_",
                                  "WHATSAPP_", "DATABASE_", "LOG_", "API_", "MCP_",
-                                 "SECRET_", "ETTOK_", "TRIAGE_", "SPECIALIST_",
+                                 "SECRET_", "ETTOK_", "LLM_", "TRIAGE_", "SPECIALIST_",
                                  "CRITIC_", "TARGET_GROUP_", "VISION_", "CHAT_AGENT_",
                                  "AUTO_", "PACING_", "SESSION_")):
                 config[upper] = os.environ[key]
 
-        # Model defaults, so a headless install lands on a runnable config instead of
-        # inheriting whatever a previous provider left in .env.
+        # Model defaults for the chosen provider, so a headless install lands on a
+        # runnable config instead of inheriting another provider's model ids.
+        switched = existing.get("LLM_PROVIDER", provider_id) != provider_id
         for role, (env_key, _) in MODEL_ENV_KEYS.items():
-            config.setdefault(env_key, PROVIDERS["gemini"]["models"][role])
+            if switched or not config.get(env_key):
+                config[env_key] = PROVIDERS[provider_id]["models"][role]
 
         if not config.get("SECRET_KEY"):
             config["SECRET_KEY"] = secrets.token_hex(32)
@@ -372,18 +423,43 @@ def run_setup(non_interactive: bool = False, reconfigure: bool = False):
     # ── Step 1: AI Provider ──────────────────────────────────────────────
     _step_header(1, total_steps, "AI Provider")
 
-    provider_id = "gemini"
-    provider = PROVIDERS[provider_id]
-    console.print(f"Provider: [bold]{provider['name']}[/]")
+    provider_ids = list(PROVIDERS)
+    console.print("Which provider should the classification committee use?\n")
+    console.print("  [cyan]1[/] Google Gemini      [dim]— recommended: reproducible, and")
+    console.print("                        safety filters can be turned off[/]")
+    console.print("  [cyan]2[/] OpenAI-compatible  [dim]— OpenAI, OpenRouter, Groq, Together,")
+    console.print("                        DeepSeek, Ollama, LM Studio[/]\n")
     console.print(
-        "[dim]The classification committee runs on google-genai. Adding another\n"
-        "provider needs an adapter in src/classifiers/llm_client.py first.[/]\n"
+        "[dim]This tool has to read hate speech to classify it. Gemini lets the client\n"
+        "disable the filters that would block exactly those items; OpenAI-compatible\n"
+        "endpoints do not, so expect occasional refusals on the worst content.[/]\n"
     )
+
+    choice = Prompt.ask("Select provider", choices=["1", "2"], default="1")
+    provider_id = provider_ids[int(choice) - 1]
+    provider = PROVIDERS[provider_id]
+    config["LLM_PROVIDER"] = provider_id
+    console.print(f"\n[green]✓ Selected: {provider['name']}[/]")
+
+    if provider["asks_base_url"]:
+        console.print("\n[bold]Endpoint[/]")
+        for i, (label, url) in enumerate(COMPATIBLE_ENDPOINTS, 1):
+            console.print(f"  [cyan]{i}[/] {label:<20}[dim]{url or 'https://api.openai.com/v1'}[/]")
+        console.print()
+        pick = Prompt.ask(
+            "  Choose",
+            choices=[str(i) for i in range(1, len(COMPATIBLE_ENDPOINTS) + 1)],
+            default="1",
+        )
+        base_url = COMPATIBLE_ENDPOINTS[int(pick) - 1][1]
+        if base_url:
+            base_url = Prompt.ask("  Base URL", default=base_url)
+            config["OPENAI_BASE_URL"] = base_url
 
     # ── Step 2: API Key ──────────────────────────────────────────────────
     _step_header(2, total_steps, "API Key")
 
-    console.print("[dim]Get one at https://aistudio.google.com/apikey[/]\n")
+    console.print(f"[dim]Get one at {provider['key_url']}[/]\n")
 
     existing_key = config.get(provider["key_env"], "")
     if existing_key and not existing_key.endswith("..."):
@@ -399,7 +475,7 @@ def run_setup(non_interactive: bool = False, reconfigure: bool = False):
 
     # Validate
     console.print("[dim]Validating API key...[/]", end=" ")
-    if _validate_api_key(provider_id, api_key):
+    if _validate_api_key(provider_id, api_key, config.get("OPENAI_BASE_URL")):
         console.print("[green]✓ Key is valid![/]")
     else:
         console.print("[yellow]⚠ Could not validate key (network issue or invalid key)[/]")
@@ -411,11 +487,14 @@ def run_setup(non_interactive: bool = False, reconfigure: bool = False):
     # ── Step 3: Model Configuration ──────────────────────────────────────
     _step_header(3, total_steps, "Model Configuration")
 
-    # All six roles, not the four the summary used to show — VISION_MODEL and
-    # TARGET_GROUP_MODEL are real settings, and leaving them unwritten is how a
-    # config ends up half on one provider's model ids.
+    # All six roles, not the four the wizard used to write — VISION_MODEL and
+    # TARGET_GROUP_MODEL are real settings, and leaving them unwritten is how a config
+    # ends up half on one provider's model ids. Switching provider replaces them
+    # outright: gemini-3.6-flash means nothing to an OpenAI endpoint.
+    switched = existing.get("LLM_PROVIDER", "gemini") != provider_id
     for role, (env_key, _) in MODEL_ENV_KEYS.items():
-        config.setdefault(env_key, provider["models"][role])
+        if switched or not config.get(env_key):
+            config[env_key] = provider["models"][role]
 
     console.print(_model_table(config))
     console.print()

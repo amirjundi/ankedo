@@ -32,9 +32,24 @@ class AgentSettings(BaseSettings):
     # -----------------------------------------------------------------------
     # LLM Providers
     # -----------------------------------------------------------------------
+    # "gemini" or "openai". The latter covers every OpenAI-compatible endpoint —
+    # OpenRouter, Groq, Together, DeepSeek, Ollama, LM Studio — via openai_base_url.
+    llm_provider: str = Field(default="gemini")
+
     gemini_api_key: Optional[str] = Field(default=None)
     openai_api_key: Optional[str] = Field(default=None)
     anthropic_api_key: Optional[str] = Field(default=None)
+
+    # Unset means api.openai.com. Point it at any /v1 that speaks chat completions.
+    openai_base_url: Optional[str] = Field(default=None)
+
+    @field_validator("llm_provider")
+    @classmethod
+    def known_provider(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v not in ("gemini", "openai"):
+            raise ValueError(f"llm_provider must be 'gemini' or 'openai', got {v!r}")
+        return v
 
     # Model IDs are config, never hardcoded in call sites. Verify current IDs at
     # ai.google.dev/gemini-api/docs/models before changing — Gemini 2.0 and 1.5 were

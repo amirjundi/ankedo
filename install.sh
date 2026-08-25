@@ -243,7 +243,7 @@ echo ""
 # `|| true` throughout: set -e must not abandon the install half-done just because
 # the operator quit the wizard — the code is installed either way, and `ankedo setup`
 # can be re-run.
-if [ "${NON_INTERACTIVE:-}" = "1" ] || [ -n "${GEMINI_API_KEY:-}" ]; then
+if [ "${NON_INTERACTIVE:-}" = "1" ] || [ -n "${GEMINI_API_KEY:-}" ] || [ -n "${OPENAI_API_KEY:-}" ]; then
     python -m src.cli setup --non-interactive || true
 elif [ "$HAS_TTY" = "1" ]; then
     # Hand the wizard the terminal, not this script's spent stdin.
@@ -254,6 +254,7 @@ else
     info "Finish setup with either:"
     echo -e "  ${DIM}  ankedo setup${NC}                                  # interactive"
     echo -e "  ${DIM}  GEMINI_API_KEY=AIza... ankedo setup --non-interactive${NC}"
+    echo -e "  ${DIM}  LLM_PROVIDER=openai OPENAI_API_KEY=sk-... ankedo setup --non-interactive${NC}"
     echo ""
 fi
 
