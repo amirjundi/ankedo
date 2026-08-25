@@ -206,15 +206,45 @@ foreach ($dir in @("data", "evidence", "logs", "screenshots")) {
 }
 Write-OK "Data directories ready"
 
+# ── Step 5b: Put `ankedo` on PATH ─────────────────────────────────────────
+# pip puts the console script in .venv\Scripts, and this script's Activate call
+# dies with the script — so a fresh PowerShell has never heard of `ankedo`. Add
+# the directory to the user PATH permanently.
+
+Write-Step "Adding the ankedo command to PATH..."
+
+$ScriptsDir = Join-Path $VenvDir "Scripts"
+if (Test-Path (Join-Path $ScriptsDir "ankedo.exe")) {
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    if ($userPath -notlike "*$ScriptsDir*") {
+        [Environment]::SetEnvironmentVariable("Path", "$userPath;$ScriptsDir", "User")
+        Write-OK "Added $ScriptsDir to your user PATH"
+        Write-Info "Open a new terminal for 'ankedo' to resolve"
+    } else {
+        Write-OK "Already on PATH"
+    }
+    # This session too, so the wizard below and any follow-up command work now.
+    $env:Path = "$env:Path;$ScriptsDir"
+} else {
+    Write-Warn "ankedo.exe not found — use $ScriptsDir\ankedo.exe directly"
+}
+
 # ── Step 6: Run Setup Wizard ──────────────────────────────────────────────
 
 Write-Step "Launching configuration wizard..."
 Write-Host ""
 
-if ($NonInteractive) {
+if ($NonInteractive -or $env:GEMINI_API_KEY) {
     & python -m src.cli setup --non-interactive
-} else {
+} elseif ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected) {
     & python -m src.cli setup
+} else {
+    Write-Warn "No console available - skipping the interactive wizard"
+    Write-Host ""
+    Write-Info "Finish setup with either:"
+    Write-Host "    ankedo setup" -ForegroundColor DarkGray
+    Write-Host "    `$env:GEMINI_API_KEY='AIza...'; ankedo setup --non-interactive" -ForegroundColor DarkGray
+    Write-Host ""
 }
 
 # ── Step 7: Install Frontend Dependencies ─────────────────────────────────
@@ -243,7 +273,6 @@ Write-Host "  ╚═════════════════════
 Write-Host ""
 Write-Host "  Quick Start:" -ForegroundColor Cyan
 Write-Host "    cd $ProjectRoot" -ForegroundColor DarkGray
-Write-Host "    .venv\Scripts\Activate.ps1" -ForegroundColor DarkGray
 Write-Host "    ankedo doctor    # Verify installation" -ForegroundColor DarkGray
 Write-Host "    ankedo start     # Launch agent + dashboard" -ForegroundColor DarkGray
 Write-Host ""

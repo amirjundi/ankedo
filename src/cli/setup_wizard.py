@@ -29,43 +29,42 @@ ENV_EXAMPLE = PROJECT_ROOT / ".env.example"
 
 # ── AI Provider Definitions ──────────────────────────────────────────────────
 
+# Gemini only, because that is the only provider the code can actually call:
+# src/classifiers/llm_client.py is built on google-genai (structured output, a fixed
+# seed, and safety filters forced off — none of which is portable to another SDK).
+# The wizard used to offer OpenAI, Anthropic and "custom"; picking one wrote gpt-4o
+# model ids and an OPENAI_API_KEY into .env, and the first classification then died
+# with "no Gemini API key configured". A menu entry is a promise the runtime has to
+# keep, so a provider belongs here only once llm_client speaks it.
+#
+# ponytail: one-provider dict rather than a plugin registry — add the second provider
+# and its adapter together, and grow this then.
 PROVIDERS = {
-    "openai": {
-        "name": "OpenAI",
-        "key_env": "OPENAI_API_KEY",
-        "key_prefix": "sk-",
+    "gemini": {
+        "name": "Google Gemini",
+        "key_env": "GEMINI_API_KEY",
+        "key_prefix": "AIza",
+        # Keep in step with the defaults in src/core/settings.py.
         "models": {
-            "triage": "gpt-4o-mini",
-            "specialist": "gpt-4o",
-            "critic": "gpt-4o-mini",
-            "chat": "gpt-4o-mini",
+            "triage": "gemini-3.5-flash-lite",
+            "specialist": "gemini-3.6-flash",
+            "critic": "gemini-3.5-flash-lite",
+            "target_group": "gemini-3.5-flash-lite",
+            "vision": "gemini-3.6-flash",
+            "chat": "gemini-3.6-flash",
         },
-        "validate_url": "https://api.openai.com/v1/models",
+        "validate_url": "https://generativelanguage.googleapis.com/v1beta/models",
     },
-    "anthropic": {
-        "name": "Anthropic",
-        "key_env": "ANTHROPIC_API_KEY",
-        "key_prefix": "sk-ant-",
-        "models": {
-            "triage": "claude-3-5-haiku-20241022",
-            "specialist": "claude-sonnet-4-20250514",
-            "critic": "claude-3-5-haiku-20241022",
-            "chat": "claude-3-5-haiku-20241022",
-        },
-        "validate_url": "https://api.anthropic.com/v1/messages",
-    },
-    "custom": {
-        "name": "Custom (OpenAI-compatible)",
-        "key_env": "OPENAI_API_KEY",
-        "key_prefix": "",
-        "models": {
-            "triage": "default",
-            "specialist": "default",
-            "critic": "default",
-            "chat": "default",
-        },
-        "validate_url": None,
-    },
+}
+
+# .env keys for each model role, in the order the wizard shows them.
+MODEL_ENV_KEYS = {
+    "triage": ("TRIAGE_MODEL", "Triage — first-pass filter"),
+    "specialist": ("SPECIALIST_MODEL", "Specialist — deep Arabic/Kurdish analysis"),
+    "critic": ("CRITIC_MODEL", "Critic — anti-hallucination review"),
+    "target_group": ("TARGET_GROUP_MODEL", "Target group — who the speech targets"),
+    "vision": ("VISION_MODEL", "Vision — image and video analysis"),
+    "chat": ("CHAT_AGENT_MODEL", "Chat — conversational admin interface"),
 }
 
 
@@ -101,33 +100,15 @@ def _validate_api_key(provider_id: str, api_key: str, base_url: str | None = Non
         console.print("[yellow]⚠ httpx not installed — skipping key validation[/]")
         return True
 
+    url = base_url or PROVIDERS[provider_id]["validate_url"]
     try:
-        if provider_id == "openai" or provider_id == "custom":
-            url = base_url or "https://api.openai.com/v1/models"
-            resp = httpx.get(
-                url, headers={"Authorization": f"Bearer {api_key}"}, timeout=10
-            )
-            return resp.status_code == 200
-        elif provider_id == "anthropic":
-            resp = httpx.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": "claude-3-5-haiku-20241022",
-                    "max_tokens": 1,
-                    "messages": [{"role": "user", "content": "hi"}],
-                },
-                timeout=15,
-            )
-            return resp.status_code in (200, 201)
+        # ListModels is the cheapest authenticated call — no tokens spent, and it
+        # fails on a revoked key exactly as generateContent would.
+        resp = httpx.get(url, params={"key": api_key}, timeout=10)
     except Exception as e:
         console.print(f"[yellow]⚠ Validation request failed: {e}[/]")
         return False
-    return False
+    return resp.status_code == 200
 
 
 def _enrol_with_code(base_url: str, agent_id: str) -> str:
@@ -228,8 +209,15 @@ def _load_existing_env() -> dict[str, str]:
 
 
 def _write_env(config: dict[str, str]):
-    """Write config dict to .env file, preserving comments from .env.example."""
+    """Write config dict to .env file, preserving comments from .env.example.
+
+    Anything in `config` that .env.example does not mention is appended rather than
+    dropped. The template is a curated subset — GEMINI_API_KEY and the ETTOK_* keys
+    were collected by the wizard and then silently discarded here, so the agent came
+    up unconfigured after a setup that reported success.
+    """
     lines: list[str] = []
+    written: set[str] = set()
 
     if ENV_EXAMPLE.exists():
         for line in ENV_EXAMPLE.read_text(encoding="utf-8").splitlines():
@@ -240,18 +228,91 @@ def _write_env(config: dict[str, str]):
                 key = stripped.split("=", 1)[0].strip()
                 value = config.get(key, stripped.split("=", 1)[1].strip())
                 lines.append(f"{key}={value}")
+                written.add(key)
             else:
                 lines.append(line)
-    else:
-        for key, value in config.items():
-            lines.append(f"{key}={value}")
+
+    extra = [k for k in config if k not in written]
+    if extra:
+        lines.append("")
+        lines.append("# ── Set by `ankedo setup` ─────────────────────────────────────")
+        lines.extend(f"{key}={config[key]}" for key in extra)
 
     ENV_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _model_table(config: dict[str, str]) -> Table:
+    table = Table(box=box.SIMPLE_HEAVY, show_header=True)
+    table.add_column("Role", style="cyan")
+    table.add_column(".env key", style="dim")
+    table.add_column("Model", style="green")
+    for _role, (env_key, label) in MODEL_ENV_KEYS.items():
+        table.add_row(label, env_key, config.get(env_key, "[dim]unset[/]"))
+    return table
+
+
+def show_models():
+    """Print the current model assignments — `ankedo configure models`."""
+    config = _load_existing_env()
+    if not config:
+        console.print("[red]✗ No .env found. Run 'ankedo setup' first.[/]")
+        sys.exit(1)
+    console.print()
+    console.print(_model_table(config))
+    console.print(
+        "\n[dim]Change one with:[/]\n"
+        "  [cyan]ankedo configure set SPECIALIST_MODEL=gemini-3.6-flash[/]\n"
+    )
+
+
+def set_env_values(pairs: tuple[str, ...]):
+    """Set KEY=VALUE pairs in .env — `ankedo configure set`.
+
+    The scriptable path: onboarding a machine over SSH should not require driving an
+    interactive wizard.
+    """
+    config = _load_existing_env()
+    if not config:
+        console.print("[red]✗ No .env found. Run 'ankedo setup' first.[/]")
+        sys.exit(1)
+
+    known = {env_key for env_key, _ in MODEL_ENV_KEYS.values()}
+    for pair in pairs:
+        if "=" not in pair:
+            console.print(f"[red]✗ Expected KEY=VALUE, got '{pair}'[/]")
+            sys.exit(1)
+        key, _, value = pair.partition("=")
+        key = key.strip().upper()
+        if not key:
+            console.print(f"[red]✗ Empty key in '{pair}'[/]")
+            sys.exit(1)
+        old = config.get(key)
+        config[key] = value.strip()
+        # A typo'd model name is only discovered on the first classification, by
+        # which point the run has already burned its collection pass.
+        if key.endswith("_MODEL") and key not in known:
+            console.print(f"[yellow]⚠ {key} is not a model role AnkEdo reads[/]")
+        console.print(f"[green]✓[/] {key}: [dim]{old or 'unset'}[/] → [bold]{value.strip()}[/]")
+
+    _write_env(config)
+    console.print(f"\n[green]✓ Saved to {ENV_FILE}[/]")
+    console.print("[dim]Restart the agent for changes to take effect.[/]")
 
 
 def run_setup(non_interactive: bool = False, reconfigure: bool = False):
     """Main setup wizard entry point."""
     _banner()
+
+    # Without a terminal, every Confirm.ask reads EOF and rich re-prompts forever —
+    # the "Please enter Y or N" loop that ends in Aborted!. Say what to do instead.
+    if not non_interactive and not sys.stdin.isatty():
+        console.print("[red]✗ No terminal attached — cannot run the interactive wizard.[/]")
+        console.print(
+            "\n[dim]Run it from a terminal, or configure headlessly:[/]\n"
+            "  [cyan]ankedo setup[/]\n"
+            "  [cyan]GEMINI_API_KEY=AIza... ankedo setup --non-interactive[/]\n"
+        )
+        sys.exit(1)
 
     existing = _load_existing_env()
     total_steps = 6
@@ -277,21 +338,29 @@ def run_setup(non_interactive: bool = False, reconfigure: bool = False):
     # ── Non-interactive mode ─────────────────────────────────────────────
     if non_interactive:
         console.print("[cyan]Running in non-interactive mode...[/]")
-        # Validate required keys from environment
-        required = ["OPENAI_API_KEY"]
-        missing = [k for k in required if not os.environ.get(k) and not config.get(k)]
-        if missing:
-            console.print(f"[red]✗ Missing required environment variables: {', '.join(missing)}[/]")
-            console.print("[dim]Set them in your environment or .env file before running --non-interactive[/]")
+        # GEMINI_API_KEY, not OPENAI_API_KEY: the required key is the one the
+        # classifier actually calls with.
+        if not os.environ.get("GEMINI_API_KEY") and not config.get("GEMINI_API_KEY"):
+            console.print("[red]✗ GEMINI_API_KEY is not set[/]")
+            console.print(
+                "[dim]Export it before running --non-interactive:[/]\n"
+                "[dim]  export GEMINI_API_KEY=AIza...[/]"
+            )
             sys.exit(1)
 
         for key in os.environ:
             upper = key.upper()
-            if upper.startswith(("OPENAI_", "ANTHROPIC_", "TELEGRAM_", "WHATSAPP_",
-                                 "DATABASE_", "LOG_", "API_", "MCP_", "SECRET_",
-                                 "TRIAGE_", "SPECIALIST_", "CRITIC_", "CHAT_AGENT_",
+            if upper.startswith(("GEMINI_", "OPENAI_", "ANTHROPIC_", "TELEGRAM_",
+                                 "WHATSAPP_", "DATABASE_", "LOG_", "API_", "MCP_",
+                                 "SECRET_", "ETTOK_", "TRIAGE_", "SPECIALIST_",
+                                 "CRITIC_", "TARGET_GROUP_", "VISION_", "CHAT_AGENT_",
                                  "AUTO_", "PACING_", "SESSION_")):
                 config[upper] = os.environ[key]
+
+        # Model defaults, so a headless install lands on a runnable config instead of
+        # inheriting whatever a previous provider left in .env.
+        for role, (env_key, _) in MODEL_ENV_KEYS.items():
+            config.setdefault(env_key, PROVIDERS["gemini"]["models"][role])
 
         if not config.get("SECRET_KEY"):
             config["SECRET_KEY"] = secrets.token_hex(32)
@@ -303,49 +372,34 @@ def run_setup(non_interactive: bool = False, reconfigure: bool = False):
     # ── Step 1: AI Provider ──────────────────────────────────────────────
     _step_header(1, total_steps, "AI Provider")
 
-    console.print("Which AI provider would you like to use?\n")
-    provider_choices = list(PROVIDERS.keys())
-    for i, pid in enumerate(provider_choices, 1):
-        p = PROVIDERS[pid]
-        marker = "→ " if i == 1 else "  "
-        console.print(f"  {marker}[bold]{i}[/]. {p['name']}")
-    console.print()
-
-    provider_idx = Prompt.ask(
-        "Select provider",
-        choices=[str(i) for i in range(1, len(provider_choices) + 1)],
-        default="1",
-    )
-    provider_id = provider_choices[int(provider_idx) - 1]
+    provider_id = "gemini"
     provider = PROVIDERS[provider_id]
-    console.print(f"\n[green]✓ Selected: {provider['name']}[/]")
-
-    # Custom base URL for custom providers
-    custom_base_url = None
-    if provider_id == "custom":
-        custom_base_url = Prompt.ask(
-            "\nEnter the API base URL (e.g., http://localhost:11434/v1)",
-        )
-        config["OPENAI_API_BASE"] = custom_base_url
+    console.print(f"Provider: [bold]{provider['name']}[/]")
+    console.print(
+        "[dim]The classification committee runs on google-genai. Adding another\n"
+        "provider needs an adapter in src/classifiers/llm_client.py first.[/]\n"
+    )
 
     # ── Step 2: API Key ──────────────────────────────────────────────────
     _step_header(2, total_steps, "API Key")
 
+    console.print("[dim]Get one at https://aistudio.google.com/apikey[/]\n")
+
     existing_key = config.get(provider["key_env"], "")
-    if existing_key and existing_key not in ("sk-...", "sk-ant-..."):
+    if existing_key and not existing_key.endswith("..."):
         console.print(f"[dim]Current key: {_mask_key(existing_key)}[/]")
         if not Confirm.ask("Update this key?", default=False):
             api_key = existing_key
         else:
             api_key = Prompt.ask(f"Enter your {provider['name']} API key")
     else:
-        hint = f" (starts with {provider['key_prefix']})" if provider["key_prefix"] else ""
-        api_key = Prompt.ask(f"Enter your {provider['name']} API key{hint}")
+        api_key = Prompt.ask(
+            f"Enter your {provider['name']} API key (starts with {provider['key_prefix']})"
+        )
 
     # Validate
     console.print("[dim]Validating API key...[/]", end=" ")
-    validate_url = custom_base_url + "/models" if custom_base_url else None
-    if _validate_api_key(provider_id, api_key, validate_url):
+    if _validate_api_key(provider_id, api_key):
         console.print("[green]✓ Key is valid![/]")
     else:
         console.print("[yellow]⚠ Could not validate key (network issue or invalid key)[/]")
@@ -354,30 +408,21 @@ def run_setup(non_interactive: bool = False, reconfigure: bool = False):
 
     config[provider["key_env"]] = api_key
 
-    # Set models based on provider
-    config["TRIAGE_MODEL"] = provider["models"]["triage"]
-    config["SPECIALIST_MODEL"] = provider["models"]["specialist"]
-    config["CRITIC_MODEL"] = provider["models"]["critic"]
-    config["CHAT_AGENT_MODEL"] = provider["models"]["chat"]
-
     # ── Step 3: Model Configuration ──────────────────────────────────────
     _step_header(3, total_steps, "Model Configuration")
 
-    model_table = Table(box=box.SIMPLE_HEAVY, show_header=True)
-    model_table.add_column("Role", style="cyan")
-    model_table.add_column("Model", style="green")
-    model_table.add_row("Triage Agent", config["TRIAGE_MODEL"])
-    model_table.add_row("Specialist Agent", config["SPECIALIST_MODEL"])
-    model_table.add_row("Critic Agent", config["CRITIC_MODEL"])
-    model_table.add_row("Chat Agent", config["CHAT_AGENT_MODEL"])
-    console.print(model_table)
+    # All six roles, not the four the summary used to show — VISION_MODEL and
+    # TARGET_GROUP_MODEL are real settings, and leaving them unwritten is how a
+    # config ends up half on one provider's model ids.
+    for role, (env_key, _) in MODEL_ENV_KEYS.items():
+        config.setdefault(env_key, provider["models"][role])
+
+    console.print(_model_table(config))
     console.print()
 
     if Confirm.ask("Customize model assignments?", default=False):
-        config["TRIAGE_MODEL"] = Prompt.ask("Triage model", default=config["TRIAGE_MODEL"])
-        config["SPECIALIST_MODEL"] = Prompt.ask("Specialist model", default=config["SPECIALIST_MODEL"])
-        config["CRITIC_MODEL"] = Prompt.ask("Critic model", default=config["CRITIC_MODEL"])
-        config["CHAT_AGENT_MODEL"] = Prompt.ask("Chat model", default=config["CHAT_AGENT_MODEL"])
+        for role, (env_key, label) in MODEL_ENV_KEYS.items():
+            config[env_key] = Prompt.ask(f"  {label}", default=config[env_key])
         console.print("[green]✓ Models updated[/]")
     else:
         console.print("[green]✓ Using defaults[/]")

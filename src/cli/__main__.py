@@ -45,19 +45,33 @@ def setup_cmd(non_interactive: bool, reconfigure: bool):
     run_setup(non_interactive=non_interactive, reconfigure=reconfigure)
 
 
-@main.command(name="configure")
-@click.argument("section", required=False, default=None)
-def configure_cmd(section: str | None):
-    """Re-configure a specific section (provider, channels, models).
+@main.group(name="configure", invoke_without_command=True)
+@click.pass_context
+def configure_group(ctx):
+    """Inspect or change configuration without re-running the whole wizard."""
+    if ctx.invoked_subcommand is None:
+        from src.cli.setup_wizard import run_setup
+        run_setup(reconfigure=True)
 
-    Sections: provider, channels, models, all
+
+@configure_group.command(name="models")
+def configure_models_cmd():
+    """Show the model assigned to each agent role."""
+    from src.cli.setup_wizard import show_models
+    show_models()
+
+
+@configure_group.command(name="set")
+@click.argument("pairs", nargs=-1, required=True, metavar="KEY=VALUE...")
+def configure_set_cmd(pairs: tuple[str, ...]):
+    """Set one or more .env values.
+
+    \b
+    ankedo configure set SPECIALIST_MODEL=gemini-3.6-flash
+    ankedo configure set TRIAGE_MODEL=gemini-3.5-flash-lite LOG_LEVEL=DEBUG
     """
-    from src.cli.setup_wizard import run_setup
-    if section == "all" or section is None:
-        run_setup(reconfigure=True)
-    else:
-        # For now, re-run the full wizard
-        run_setup(reconfigure=True)
+    from src.cli.setup_wizard import set_env_values
+    set_env_values(pairs)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

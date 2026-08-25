@@ -27,6 +27,20 @@ warn()  { echo -e "  ${YELLOW}⚠ $1${NC}"; }
 fail()  { echo -e "  ${RED}✗ $1${NC}"; }
 info()  { echo -e "  ${DIM}$1${NC}"; }
 
+# ── Find a terminal to read from ─────────────────────────────────────────
+# Under `curl | bash` this script's stdin IS the pipe carrying the script, and it
+# is already spent. Every prompt then reads EOF: `read` returns empty, and the
+# wizard's Confirm.ask spins on "Please enter Y or N" until it aborts. Anything
+# interactive has to talk to /dev/tty instead of stdin.
+if [ -t 0 ]; then
+    HAS_TTY=1; TTY_DEV="/dev/stdin"
+elif [ -e /dev/tty ] && (exec </dev/tty) 2>/dev/null; then
+    HAS_TTY=1; TTY_DEV="/dev/tty"
+else
+    # Piped with no controlling terminal (CI, docker build, nohup).
+    HAS_TTY=0; TTY_DEV=""
+fi
+
 # ── Banner ────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${CYAN}  ╔══════════════════════════════════════════╗${NC}"
@@ -43,14 +57,23 @@ if [ ! -f "$PROJECT_ROOT/pyproject.toml" ]; then
     step "Cloning AnkEdo repository..."
     
     CLONE_DIR="$HOME/AnkEdo"
-    if [ -d "$CLONE_DIR" ]; then
-        info "Existing installation found at $CLONE_DIR"
-        read -p "  Overwrite? (y/N) " choice
-        if [ "$choice" = "y" ] || [ "$choice" = "Y" ]; then
-            rm -rf "$CLONE_DIR"
-            git clone https://github.com/amirjundi/ankedo.git "$CLONE_DIR"
+    if [ -d "$CLONE_DIR/.git" ]; then
+        # Update in place. The old path asked "Overwrite? (y/N)" and rm -rf'd on yes —
+        # which also destroys .env, data/ and logs/. Under `curl | bash` that prompt
+        # read EOF and took the silent "no", so re-running the installer never picked
+        # up new code at all. A pull does the intended thing and keeps local state.
+        info "Existing installation found at $CLONE_DIR — updating"
+        if git -C "$CLONE_DIR" pull --ff-only 2>&1 | sed 's/^/  /'; then
+            ok "Updated to latest"
+        else
+            warn "Could not fast-forward (local commits or a dirty tree)"
+            info "Resolve manually: cd $CLONE_DIR && git status"
         fi
         PROJECT_ROOT="$CLONE_DIR"
+    elif [ -d "$CLONE_DIR" ]; then
+        fail "$CLONE_DIR exists but is not a git checkout"
+        info "Move it aside and re-run: mv $CLONE_DIR ${CLONE_DIR}.bak"
+        exit 1
     else
         git clone https://github.com/amirjundi/ankedo.git "$CLONE_DIR"
         PROJECT_ROOT="$CLONE_DIR"
@@ -171,14 +194,67 @@ for dir in data evidence logs screenshots; do
 done
 ok "Data directories ready"
 
+# ── Step 5b: Put `ankedo` on PATH ─────────────────────────────────────────
+# pip installs the console script into .venv/bin, and this script's `activate`
+# dies with the script — so a fresh shell has never heard of `ankedo`. Symlink it
+# somewhere already on PATH, and have the link point at the venv's interpreter so
+# it works without activation.
+step "Linking the ankedo command..."
+
+SHIM_DIR=""
+for candidate in "$HOME/.local/bin" "/usr/local/bin"; do
+    if [ -d "$candidate" ] && [ -w "$candidate" ]; then
+        SHIM_DIR="$candidate"
+        break
+    fi
+done
+# ~/.local/bin is the standard user-level location and is on PATH by default on
+# most distros; create it rather than falling back to sudo.
+if [ -z "$SHIM_DIR" ]; then
+    mkdir -p "$HOME/.local/bin" && SHIM_DIR="$HOME/.local/bin"
+fi
+
+if [ -n "$SHIM_DIR" ] && [ -x "$VENV_DIR/bin/ankedo" ]; then
+    ln -sf "$VENV_DIR/bin/ankedo" "$SHIM_DIR/ankedo"
+    ok "Linked $SHIM_DIR/ankedo"
+
+    case ":$PATH:" in
+        *":$SHIM_DIR:"*) ;;
+        *)
+            warn "$SHIM_DIR is not on your PATH"
+            # Name the file rather than appending to it — editing a user's shell rc
+            # behind their back is worse than one line of copy-paste.
+            rc="$HOME/.bashrc"
+            [ -n "${ZSH_VERSION:-}" ] || [ "$(basename "${SHELL:-}")" = "zsh" ] && rc="$HOME/.zshrc"
+            echo ""
+            echo -e "  ${YELLOW}Add this line to $rc, then reopen your terminal:${NC}"
+            echo -e "  ${DIM}  export PATH=\"\$HOME/.local/bin:\$PATH\"${NC}"
+            echo ""
+            ;;
+    esac
+else
+    warn "Could not link the ankedo command — use $VENV_DIR/bin/ankedo directly"
+fi
+
 # ── Step 6: Run Setup Wizard ──────────────────────────────────────────────
 step "Launching configuration wizard..."
 echo ""
 
-if [ "${NON_INTERACTIVE:-}" = "1" ]; then
-    python -m src.cli setup --non-interactive
+# `|| true` throughout: set -e must not abandon the install half-done just because
+# the operator quit the wizard — the code is installed either way, and `ankedo setup`
+# can be re-run.
+if [ "${NON_INTERACTIVE:-}" = "1" ] || [ -n "${GEMINI_API_KEY:-}" ]; then
+    python -m src.cli setup --non-interactive || true
+elif [ "$HAS_TTY" = "1" ]; then
+    # Hand the wizard the terminal, not this script's spent stdin.
+    python -m src.cli setup < "$TTY_DEV" || true
 else
-    python -m src.cli setup
+    warn "No terminal available — skipping the interactive wizard"
+    echo ""
+    info "Finish setup with either:"
+    echo -e "  ${DIM}  ankedo setup${NC}                                  # interactive"
+    echo -e "  ${DIM}  GEMINI_API_KEY=AIza... ankedo setup --non-interactive${NC}"
+    echo ""
 fi
 
 # ── Step 7: Install Frontend Dependencies ─────────────────────────────────
@@ -202,13 +278,13 @@ echo -e "${GREEN}  ║  ✓ AnkEdo installed successfully!         ║${NC}"
 echo -e "${GREEN}  ╚══════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "  ${CYAN}Quick Start:${NC}"
-echo -e "  ${DIM}  cd $PROJECT_ROOT${NC}"
-echo -e "  ${DIM}  source .venv/bin/activate${NC}"
 echo -e "  ${DIM}  ankedo doctor    # Verify installation${NC}"
 echo -e "  ${DIM}  ankedo start     # Launch agent + dashboard${NC}"
 echo ""
 echo -e "  ${CYAN}Other Commands:${NC}"
-echo -e "  ${DIM}  ankedo setup     # Re-run configuration wizard${NC}"
-echo -e "  ${DIM}  ankedo update    # Update from GitHub${NC}"
-echo -e "  ${DIM}  ankedo --help    # See all commands${NC}"
+echo -e "  ${DIM}  ankedo setup             # Re-run configuration wizard${NC}"
+echo -e "  ${DIM}  ankedo configure models  # Show model per agent role${NC}"
+echo -e "  ${DIM}  ankedo configure set K=V # Change a setting from the shell${NC}"
+echo -e "  ${DIM}  ankedo update            # Update from GitHub${NC}"
+echo -e "  ${DIM}  ankedo --help            # See all commands${NC}"
 echo ""
