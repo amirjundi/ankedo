@@ -56,6 +56,58 @@ def test_seed_pack_verifies():
     assert result.ok, result.errors
 
 
+def test_pattern_tropes_need_no_surface_forms(tmp_path):
+    """About 40% of the field data describes a pattern rather than quoting one.
+
+    "Discrimination over holiday leave" is a real documented trope that nobody types
+    verbatim. Requiring a literal string would reject the analysts' best material.
+    """
+    import shutil
+
+    import yaml
+
+    from src.packs.verify import verify_pack
+
+    shutil.copytree(PACK_DIR, tmp_path / "pack")
+    tropes_file = tmp_path / "pack" / "tropes.yaml"
+    doc = yaml.safe_load(tropes_file.read_text(encoding="utf-8"))
+    doc["entries"].append({
+        "trope_id": "collective-blame",
+        "target_group": "yazidi",
+        "surface_forms": [],  # nothing literal to match
+        "implicature": "Treating one member's act as proof of a community trait.",
+        "activation": {"requires_target_group": True},
+        "negative_examples": [{"comment_text": "this person behaved badly"}],
+    })
+    tropes_file.write_text(yaml.safe_dump(doc, allow_unicode=True), encoding="utf-8")
+
+    assert verify_pack(tmp_path / "pack").ok
+
+
+def test_a_trope_with_nothing_to_recognise_is_rejected(tmp_path):
+    """No surface forms AND no description means the row does nothing."""
+    import shutil
+
+    import yaml
+
+    from src.packs.verify import verify_pack
+
+    shutil.copytree(PACK_DIR, tmp_path / "pack")
+    tropes_file = tmp_path / "pack" / "tropes.yaml"
+    doc = yaml.safe_load(tropes_file.read_text(encoding="utf-8"))
+    doc["entries"].append({
+        "trope_id": "empty",
+        "target_group": "yazidi",
+        "surface_forms": [],
+        "negative_examples": [{"comment_text": "x"}],
+    })
+    tropes_file.write_text(yaml.safe_dump(doc, allow_unicode=True), encoding="utf-8")
+
+    result = verify_pack(tmp_path / "pack")
+    assert not result.ok
+    assert any("recognise" in e for e in result.errors)
+
+
 def test_trope_without_negative_examples_is_rejected(tmp_path):
     """The rule that stops the system flagging all devout speech."""
     import shutil

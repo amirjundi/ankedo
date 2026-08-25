@@ -367,6 +367,62 @@ deliberately. Without them the trope over-fires on ordinary speech.
 
 ---
 
+## For non-technical staff: the Excel workbook
+
+Curators should not be asked to write YAML. `docs/lexicon_data_entry_template.xlsx`
+is a data-entry form whose columns map one-to-one onto the database tables.
+
+```bash
+python tools/make_lexicon_template.py docs/lexicon_data_entry_template.xlsx
+```
+
+**Four sheets:**
+
+| Sheet | Contents |
+|---|---|
+| `ابدأ هنا · START HERE` | instructions, Arabic and English |
+| `LEXICON · المصطلحات` | one row per term, 11 columns |
+| `TROPES · الأنماط` | one row per pattern, 11 columns |
+| `REFERENCE · المرجع` | valid group slugs, categories, severity bands |
+
+Right-to-left layout, frozen header, dropdowns on every constrained field, and a
+hover note on each column explaining what it means and how to decide. Header colours
+carry meaning:
+
+- **red** — required; a row missing one is rejected
+- **purple** — needs the curator's judgement; not present in the source files
+- **grey rows** — worked examples from the real Duhok data, marked `EXAMPLE —` in the
+  source column so the importer skips them. Curators can leave them in place as a
+  reference.
+
+### Handing the filled sheet back
+
+```bash
+# validate only — safe to run repeatedly while curating
+python tools/import_lexicon_sheet.py filled.xlsx --check
+
+# convert to pack YAML once it is clean
+python tools/import_lexicon_sheet.py filled.xlsx packs/iraq-minorities
+ankedo pack verify && ankedo pack install
+```
+
+The validator rejects a workbook rather than importing bad rows, because each rule
+maps to a way the classifier fails *silently* later:
+
+| Rejected | Because |
+|---|---|
+| missing `source` | the term cannot be defended when a report is challenged |
+| unknown `target_group` | the term never matches its trope, with no error anywhere |
+| `is_explicit` blank | the field that decides whether ordinary speech gets flagged |
+| trope without `negative_example` | the pattern will fire on harmless speech |
+| trope without `activation_topics` | the pattern never fires; the row does nothing |
+| the same term twice | two rows drift apart when someone edits only one |
+
+It also warns without blocking — for instance, a severity-9 term with no
+`never_flag_when` will flag journalists quoting it.
+
+---
+
 ## Getting your existing data onto the VPS
 
 The importer already handles both of your files:

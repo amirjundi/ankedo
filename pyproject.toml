@@ -48,6 +48,8 @@ dependencies = [
 
     # Knowledge packs (taxonomy / lexicon / tropes)
     "pyyaml>=6.0",
+    # Curator data-entry workbooks (tools/make_lexicon_template.py)
+    "openpyxl>=3.1",
 
     # Utilities
     "structlog>=24.4.0",

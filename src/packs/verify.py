@@ -117,8 +117,16 @@ def verify_pack(pack_dir: Path, *, strict_gold: bool = False) -> VerifyResult:
         if not trope.get("trope_id"):
             result.errors.append(f"tropes[{i}]: missing 'trope_id'")
         result.errors.extend(_scope_errors(trope, slugs, f"tropes[{label}]"))
-        if not trope.get("surface_forms"):
-            result.errors.append(f"tropes[{label}]: no surface_forms")
+        # A trope needs *something* to recognise it by, but not necessarily a literal
+        # string. Pattern tropes — collective blame, "not an authentic people" — and
+        # visual ones have no fixed wording; they are handed to the model as guidance.
+        # Requiring surface_forms would reject the 40% of the field data that
+        # describes a pattern rather than quoting one.
+        if not trope.get("surface_forms") and not trope.get("implicature") and not trope.get("description"):
+            result.errors.append(
+                f"tropes[{label}]: needs either surface_forms to match or a "
+                "description of the pattern to recognise"
+            )
         if not trope.get("negative_examples"):
             result.errors.append(
                 f"tropes[{label}]: no negative_examples — without the benign half of the "
