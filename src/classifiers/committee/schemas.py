@@ -10,6 +10,8 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+from src.classifiers.categories import CATEGORIES
+
 
 class Verdict(str, Enum):
     HATE = "hate"
@@ -19,14 +21,13 @@ class Verdict(str, Enum):
     AMBIGUOUS = "ambiguous"
 
 
-class Category(str, Enum):
-    SLUR = "slur"
-    THREAT = "threat"
-    DEHUMANIZATION = "dehumanization"
-    INCITEMENT = "incitement"
-    COUNTER_SPEECH = "counter_speech"
-    NEWS_REPORTING = "news_reporting"
-    NONE = "none"
+# Built from src/classifiers/categories.py, which holds the taxonomy the Duhok
+# research actually produced. Adding a category is one edit there, not here.
+Category = Enum("Category", {c.slug.upper(): c.slug for c in CATEGORIES}, type=str)
+Category.__doc__ = (
+    "What kind of hate speech this is. Includes the non-hateful labels "
+    "counter_speech and news_reporting, so a cleared item still records why."
+)
 
 
 class TriageDecision(BaseModel):

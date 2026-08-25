@@ -37,7 +37,10 @@ TARGET_GROUPS = [
     "yazidi", "christian-iraqi", "shabak", "kakai",
     "sabian-mandaean", "turkmen-iraqi", "faili-kurd", "bahai", "kurdish",
 ]
-CATEGORIES = ["slur", "threat", "dehumanization", "incitement"]
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from src.classifiers.categories import CATEGORIES as _CATS, VISUAL_FORMS as _VIS  # noqa: E402
+
+CATEGORIES = [c.slug for c in _CATS if c.slug != "none"]
 LANGUAGES = ["ar", "ku"]
 YES_NO = ["yes", "no"]
 
@@ -94,7 +97,30 @@ def build_instructions(wb: Workbook) -> None:
         ("p", "تحويل بيانات دهوك الميدانية إلى الشكل الذي تحتاجه قاعدة البيانات."),
         ("p", "Turns the Duhok field data into the shape the database needs. Each column here is a database column."),
         ("", ""),
-        ("h2", "القاعدة الأهم · The most important rule"),
+        ("h2", "أي ورقة أستخدم؟ · Which sheet do I use?"),
+        ("p", "وجدت منشوراً على فيسبوك فيه خطاب كراهية، وتعليقات مسيئة تحته. ماذا أفعل؟"),
+        ("p", "Found a Facebook post with hate speech and hateful comments under it. What now?"),
+        ("", ""),
+        ("ex", "→ EXAMPLES sheet. The whole post and all its comments go there, one row each."),
+        ("p", "ورقة EXAMPLES. المنشور وكل تعليقاته، صف لكل واحد."),
+        ("", ""),
+        ("p", "ثم اسأل: هل رأيت كلمة أو نمطاً جديداً غير موجود في القاموس؟"),
+        ("p", "Then ask: did it contain a word or pattern the dictionary does not have yet?"),
+        ("", ""),
+        ("ex", "a NEW word people type      → add ONE row to LEXICON"),
+        ("ex", "a NEW pattern or behaviour  → add ONE row to TROPES"),
+        ("ex", "nothing new                 → EXAMPLES only. This is the normal case."),
+        ("", ""),
+        ("p", "لا تُدخل كل منشور في LEXICON. القاموس يحتوي على الكلمات، وليس المنشورات."),
+        ("p", "Do NOT put every post into LEXICON. The dictionary holds words, not posts."),
+        ("p", "You will add a few LEXICON rows a week. You will add EXAMPLES rows constantly."),
+        ("", ""),
+        ("h2", "الفرق بين الأوراق · The difference"),
+        ("p", "LEXICON + TROPES = ما الذي يبحث عنه النظام  · WHAT the system looks for"),
+        ("p", "EXAMPLES = ما هو الجواب الصحيح على محتوى حقيقي · WHAT the right answer is"),
+        ("p", "Without EXAMPLES there is no way to know whether the system actually works."),
+        ("", ""),
+        ("h2", "القاعدة الأهم · LEXICON or TROPES?"),
         ("p", "إذا كان بإمكان شخص أن يكتب هذه العبارة حرفياً في تعليق ← ورقة LEXICON"),
         ("p", "إذا كانت وصفاً لنمط أو سلوك ← ورقة TROPES"),
         ("", ""),
@@ -103,6 +129,18 @@ def build_instructions(wb: Workbook) -> None:
         ("", ""),
         ("ex", "عبدة الشيطان  ← LEXICON  (people type this)"),
         ("ex", "التمييز بالإجازات في الدوام  ← TROPES  (nobody types this sentence)"),
+        ("", ""),
+        ("h2", "منشور واحد = عدة صفوف · One post = several rows"),
+        ("p", "منشور فيه ٥ تعليقات = ٦ صفوف: صف للمنشور، وصف لكل تعليق."),
+        ("p", "A post with 5 comments = 6 rows. One for the post, one per comment."),
+        ("p", "Repeat the post text on every comment row — the same comment can be hate under"),
+        ("p", "one post and completely harmless under another. That context IS the judgement."),
+        ("", ""),
+        ("h2", "سجّل التعليقات البريئة أيضاً · Record the harmless comments too"),
+        ("p", "لا تسجل المسيء فقط. التعليقات العادية هي ما يقيس الإنذارات الكاذبة."),
+        ("p", "Do not record only the hateful ones. The ordinary comments are what measure"),
+        ("p", "false alarms — a system judged only on hate speech looks perfect while flagging"),
+        ("p", "everyone. Record the whole thread as you found it."),
         ("", ""),
         ("h2", "لا تصحح الأخطاء الإملائية · Do NOT fix spelling mistakes"),
         ("p", "إذا كتب المشارك «الشبطان» بدل «الشيطان»، اتركها كما هي وضعها في عمود variants."),
@@ -275,6 +313,89 @@ def build_tropes(wb: Workbook) -> None:
         ws[ref].comment = Comment(text, "Guide", width=360, height=170)
 
 
+def build_examples(wb: Workbook) -> None:
+    """Real post + comment pairs, for measuring accuracy.
+
+    Separate from LEXICON and TROPES because it answers a different question. Those
+    two say *what to look for*; this says *what the right answer is* on real content,
+    which is the only way to know whether the classifier works.
+
+    One row per item to judge. A post with five hateful comments is six rows — one
+    for the post, five for the comments — because each is classified separately and
+    each comment is judged against the post it replies to.
+    """
+    ws = wb.create_sheet("EXAMPLES · أمثلة حقيقية")
+    ws.sheet_view.rightToLeft = True
+
+    columns = [
+        ("الرابط", "post_url", 30, ""),
+        ("نص المنشور", "parent_post_text *", 42, "required"),
+        ("نوع الصف", "row_type *", 12, "required"),
+        ("النص المراد تقييمه", "comment_text *", 42, "required"),
+        ("الفئة المستهدفة", "target_group", 18, ""),
+        ("اللغة", "dialect", 12, ""),
+        ("الحكم", "label *", 12, "judgement"),
+        ("النوع", "category", 16, ""),
+        ("الخطورة ١-١٠", "severity", 11, "judgement"),
+        ("لماذا؟ (الآلية)", "why — the mechanism *", 46, "required"),
+        ("النمط", "demonstrates_trope", 24, "judgement"),
+        ("المقيّم ١", "annotator_1", 12, ""),
+        ("المقيّم ٢", "annotator_2", 12, ""),
+        ("حالة صعبة؟", "hard_case", 11, ""),
+    ]
+    _style_header(ws, columns)
+
+    post = "مراسم دينية إيزيدية في معبد لالش"
+    _add_examples(ws, [
+        ["https://facebook.com/example/posts/1", post, "post", post,
+         "yazidi", "iraqi", "benign", "", 0,
+         "EXAMPLE — the post itself is a neutral description of a ceremony",
+         "", "benign", "benign", "no"],
+        ["https://facebook.com/example/posts/1", post, "comment",
+         "اعوذ بالله من الشيطان الرجيم", "yazidi", "iraqi", "hate", "dehumanization", 8,
+         "EXAMPLE — the pious phrase is AIMED AT Yazidi religious practice, which invokes the devil-worship libel. Any phrase invoking the devil against this community works the same way",
+         "Devil-worship libel", "hate", "hate", "yes"],
+        ["https://facebook.com/example/posts/1", post, "comment",
+         "عبدة الشيطان كلهم", "yazidi", "iraqi", "hate", "dehumanization", 8,
+         "EXAMPLE — explicit slur; hateful with or without the post context",
+         "Devil-worship libel", "hate", "hate", "no"],
+        ["https://facebook.com/example/posts/1", post, "comment",
+         "الإيزيديون ليسوا عبدة الشيطان، هذا افتراء", "yazidi", "iraqi", "benign", "counter_speech", 0,
+         "EXAMPLE — quotes the libel in order to REFUTE it. Negation reverses the meaning; flagging this attacks a defender of the community",
+         "Devil-worship libel", "benign", "benign", "yes"],
+        ["https://facebook.com/example/posts/1", post, "comment",
+         "شكرا على المعلومات", "yazidi", "iraqi", "benign", "", 0,
+         "EXAMPLE — ordinary comment. The clean ones matter: they measure false alarms",
+         "", "benign", "benign", "no"],
+        ["https://facebook.com/other/posts/9", "شاهدوا هذا الثعبان الضخم في الحديقة", "comment",
+         "اعوذ بالله من الشيطان الرجيم", "", "iraqi", "benign", "", 0,
+         "EXAMPLE — THE PAIR. Same words as row 3, but the post concerns a snake, so the phrase is ordinary piety. The MECHANISM is that the trope needs the group in context",
+         "Devil-worship libel", "benign", "benign", "yes"],
+    ])
+
+    _validate(ws, "C", ["post", "comment"])
+    _validate(ws, "G", ["hate", "benign", "ambiguous"])
+    _validate(ws, "H", CATEGORIES + ["counter_speech", "news_reporting"])
+    _validate(ws, "L", ["hate", "benign", "ambiguous"])
+    _validate(ws, "M", ["hate", "benign", "ambiguous"])
+    _validate(ws, "N", YES_NO)
+    _validate(ws, "E", TARGET_GROUPS)
+
+    from openpyxl.comments import Comment
+
+    notes = {
+        "B1": "The POST the comment appeared under. Repeat it on every comment row from that post.\n\nThis is the most important column in the sheet: the same comment can be hate on one post and harmless on another.",
+        "C1": "post = judging the post itself. comment = judging a comment under it.\n\nOne post with 5 comments = 6 rows.",
+        "D1": "For a 'post' row, repeat the post text here. For a 'comment' row, the comment.",
+        "G1": "hate / benign / ambiguous.\n\nambiguous is a REAL answer — use it when you genuinely cannot tell. It is not counted as a mistake.",
+        "J1": "Why this is the right answer. Written for someone who was not there.\n\nFor a hard case, say what makes it hard.",
+        "K1": "Two people should label the same items INDEPENDENTLY, without seeing each other's answer.\n\nThis measures whether the definition is clear enough to apply consistently. If two experts disagree often, the problem is the definition, not the model.",
+        "M1": "yes = a case that only makes sense with the post context, or that a careless reader would get wrong.\n\nThese are reported separately, because overall scores can look fine while every hard case is wrong.",
+    }
+    for ref, text in notes.items():
+        ws[ref].comment = Comment(text, "Guide", width=380, height=180)
+
+
 def build_reference(wb: Workbook) -> None:
     ws = wb.create_sheet("REFERENCE · المرجع")
     ws.sheet_view.rightToLeft = True
@@ -345,6 +466,7 @@ def main() -> None:
     build_instructions(wb)
     build_lexicon(wb)
     build_tropes(wb)
+    build_examples(wb)
     build_reference(wb)
 
     output.parent.mkdir(parents=True, exist_ok=True)

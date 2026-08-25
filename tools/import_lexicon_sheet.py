@@ -16,6 +16,8 @@ Better to reject a row now than to discover it months later in the eval.
 
 Run:  python tools/import_lexicon_sheet.py filled.xlsx packs/iraq-minorities
       python tools/import_lexicon_sheet.py filled.xlsx --check   # validate only
+
+Produces lexicon.yaml, tropes.yaml and gold_eval.jsonl.
 """
 from __future__ import annotations
 
@@ -31,7 +33,11 @@ VALID_GROUPS = {
     "yazidi", "christian-iraqi", "shabak", "kakai",
     "sabian-mandaean", "turkmen-iraqi", "faili-kurd", "bahai", "kurdish",
 }
-VALID_CATEGORIES = {"slur", "threat", "dehumanization", "incitement"}
+# Shared with the classifier — see src/classifiers/categories.py
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from src.classifiers.categories import slugs as _category_slugs  # noqa: E402
+
+VALID_CATEGORIES = set(_category_slugs())
 VALID_LANGUAGES = {"ar", "ku"}
 VALID_CONTEXTS = {"news_quotation", "academic", "counter_speech", "reclaimed"}
 
@@ -45,6 +51,7 @@ EXAMPLE_MARKER = "EXAMPLE"
 class Result:
     lexicon: list[dict] = field(default_factory=list)
     tropes: list[dict] = field(default_factory=list)
+    examples: list[dict] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     skipped: int = 0
@@ -238,6 +245,113 @@ def read_tropes(ws, result: Result) -> None:
         })
 
 
+def read_examples(ws, result: Result) -> None:
+    """Real post + comment pairs → gold_eval.jsonl.
+
+    This is what measures whether the classifier works. The two things checked
+    hardest are the two that make an eval set misleading rather than merely small:
+    a comment recorded without its post cannot test context-dependence at all, and a
+    set containing only hateful items cannot measure false alarms.
+    """
+    for index, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+        if not row or not _text(row[3]):
+            continue
+        why = _text(row[9]) if len(row) > 9 else ""
+        if _is_example(why):
+            result.skipped += 1
+            continue
+
+        where = f"EXAMPLES row {index}"
+        row_type = _text(row[2]).lower() or "comment"
+        text = _text(row[3])
+        parent = _text(row[1])
+        label = _text(row[6]).lower()
+
+        if label not in ("hate", "benign", "ambiguous"):
+            result.errors.append(f"{where}: label must be hate, benign or ambiguous")
+
+        if row_type == "comment" and not parent:
+            result.errors.append(
+                f"{where}: parent_post_text is required on a comment row — without "
+                "the post, this item cannot test whether context changes the verdict, "
+                "which is the whole mechanism"
+            )
+
+        if not why:
+            result.warnings.append(f"{where}: no reason given — a later reviewer cannot check it")
+
+        group = _text(row[4]) or None
+        if group and group not in VALID_GROUPS:
+            result.errors.append(f"{where}: unknown target_group {group!r}")
+            group = None
+
+        annotators = []
+        for column, name in ((11, "a1"), (12, "a2")):
+            value = _text(row[column]).lower() if len(row) > column else ""
+            if value in ("hate", "benign", "ambiguous"):
+                annotators.append({"id": name, "label": value})
+
+        result.examples.append({
+            "id": f"sheet-{index:04d}",
+            "comment_text": text,
+            "parent_post_text": parent or None,
+            "target_group": group,
+            "dialect": _text(row[5]) or None,
+            "label": label,
+            "category": _text(row[7]) or None,
+            "severity": _severity_optional(row[8] if len(row) > 8 else None),
+            "annotators": annotators,
+            "hard_case": _text(row[13]).lower() == "yes" if len(row) > 13 else False,
+            # The bridge from one explained example to reusable knowledge: naming
+            # the trope is what makes the explanation apply to phrasings nobody
+            # has written down yet.
+            "trope_id": (_text(row[10]) or None) if len(row) > 10 else None,
+            "why": why,
+            "source": _text(row[0]) or "curator-sheet",
+        })
+
+
+def _severity_optional(value) -> int | None:
+    raw = _text(value)
+    try:
+        return int(float(raw)) if raw else None
+    except ValueError:
+        return None
+
+
+def check_example_balance(result: Result) -> None:
+    """An eval set of only hateful items cannot measure false alarms.
+
+    A classifier that flags everything scores perfectly against it, which is the
+    failure mode that silences a community rather than protecting it.
+    """
+    if not result.examples:
+        return
+
+    labels = [entry["label"] for entry in result.examples]
+    benign = labels.count("benign")
+    hate = labels.count("hate")
+
+    if hate and not benign:
+        result.warnings.append(
+            f"EXAMPLES: {hate} hateful items and no benign ones. A system that flags "
+            "everything would score perfectly. Record the ordinary comments too"
+        )
+    elif hate and benign < hate / 2:
+        result.warnings.append(
+            f"EXAMPLES: {hate} hateful vs {benign} benign. Aim for at least as many "
+            "benign as hateful — false alarms are the harm this project can cause"
+        )
+
+    doubly = sum(1 for e in result.examples if len(e["annotators"]) >= 2)
+    if result.examples and doubly < min(20, len(result.examples)):
+        result.warnings.append(
+            f"EXAMPLES: only {doubly} items labelled by two people. Without independent "
+            "double-labelling there is no way to tell whether the definition is clear "
+            "enough to apply consistently"
+        )
+
+
 def _slug(name: str) -> str:
     cleaned = "".join(ch if ch.isalnum() or ch in " -" else "" for ch in name.lower())
     return "-".join(cleaned.split())[:100] or "unnamed-trope"
@@ -249,8 +363,9 @@ def convert(path: Path) -> Result:
 
     lexicon_sheet = next((n for n in wb.sheetnames if n.upper().startswith("LEXICON")), None)
     trope_sheet = next((n for n in wb.sheetnames if n.upper().startswith("TROPES")), None)
+    example_sheet = next((n for n in wb.sheetnames if n.upper().startswith("EXAMPLES")), None)
 
-    if lexicon_sheet is None and trope_sheet is None:
+    if lexicon_sheet is None and trope_sheet is None and example_sheet is None:
         result.errors.append(
             "no LEXICON or TROPES sheet found — is this the right workbook?"
         )
@@ -260,6 +375,9 @@ def convert(path: Path) -> Result:
         read_lexicon(wb[lexicon_sheet], result)
     if trope_sheet:
         read_tropes(wb[trope_sheet], result)
+    if example_sheet:
+        read_examples(wb[example_sheet], result)
+        check_example_balance(result)
 
     seen: dict[str, int] = {}
     for entry in result.lexicon:
@@ -314,7 +432,16 @@ def main() -> int:
         yaml.safe_dump({"entries": result.tropes}, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
     )
-    print(f"Wrote {args.pack_dir}/lexicon.yaml and tropes.yaml")
+    if result.examples:
+        import json
+
+        lines = [json.dumps(entry, ensure_ascii=False) for entry in result.examples]
+        (args.pack_dir / "gold_eval.jsonl").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8"
+        )
+
+    written = ["lexicon.yaml", "tropes.yaml"] + (["gold_eval.jsonl"] if result.examples else [])
+    print(f"Wrote {args.pack_dir}/: {', '.join(written)}")
     print("Next:  ankedo pack verify && ankedo pack install")
     return 0
 
