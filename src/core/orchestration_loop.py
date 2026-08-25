@@ -5,13 +5,16 @@ from __future__ import annotations
 
 import asyncio
 import structlog
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.case_manager import CaseManager
+from src.core.queue_manager import QueueManager
 from src.core.settings import get_settings
 from src.models.case import Case, CaseState
-from src.models.tracked_account import TrackedAccount
+from src.models.post import Post, QueueState as PostQueueState
+from src.models.queue_item import QueueItem, QueueStage
+from src.models.tracked_account import AccountStatus, TrackedAccount
 from src.notifications.dispatcher import NotificationDispatcher
 from src.models.agent_notification import AgentNotification, NotificationStatus
 from src.core.discovery_engine import DiscoveryEngine
@@ -29,6 +32,10 @@ class OrchestrationLoop:
         self.case_manager = CaseManager(session)
         self.dispatcher = NotificationDispatcher(session)
         self.discovery = DiscoveryEngine(session)
+        self.queue_manager = QueueManager(session)
+        # Latest CollectionStats, carrying the comments_scanned denominator the
+        # platform needs for hate density (contract amendment §1).
+        self.last_collection = None
 
     async def _schedule_cases(self) -> None:
         """Evaluate case lifecycle and prioritize active cases."""
@@ -75,31 +82,213 @@ class OrchestrationLoop:
                     context={"platform": platform, "healthy_count": count},
                     question=f"Low capacity on {platform}. Current: {count}. Minimum required: {self.settings.min_healthy_accounts_per_platform}",
                     urgency="High",
-                    suggested_actions=["Add new worker accounts", "Review quarantined accounts"]
+                    suggested_actions=["Add new worker accounts", "Review quarantined accounts"],
+                )
+
     async def _sync_workers(self) -> None:
-        """T075: Dynamic horizontal worker scaling."""
-        # Query active accounts and instantiate/destroy CollectorWorker instances
-        # without code changes or restarts
-        pass
+        """T075: Set each account's crawl interval from case state and health.
+
+        Scaling here is about *pacing*, not process count. Crawling faster than the
+        platform tolerates loses accounts, and a lost account costs far more than a
+        slow cycle — so an active case shortens the interval and a degraded account
+        lengthens it.
+        """
+        stmt = select(TrackedAccount).where(TrackedAccount.status == AccountStatus.ACTIVE)
+        accounts = (await self.session.execute(stmt)).scalars().all()
+
+        for account in accounts:
+            interval = self.settings.loop_interval_seconds
+            if account.linked_case_id:
+                case = await self.session.get(Case, account.linked_case_id)
+                if case and case.state in (CaseState.ACTIVE, CaseState.REACTIVATED):
+                    interval = max(60, interval // 2)
+                elif case and case.state == CaseState.DORMANT:
+                    interval *= 8  # keyword watch only (FR-CM-3)
+            account.crawl_interval_seconds = interval
+
+        await self.session.commit()
+
+    async def _collect(self) -> None:
+        """Fetch from accounts that are due, and keep the run statistics.
+
+        Collection failures are contained here: a browser that cannot start or a
+        platform that blocks us must not stop case scheduling, notifications or
+        capacity alerts from running.
+        """
+        from src.core.collection_runner import CollectionRunner
+
+        try:
+            self.last_collection = await CollectionRunner(self.session).run()
+        except Exception as exc:
+            log.exception("Collection pass failed", error=str(exc))
+            self.last_collection = None
 
     async def _process_queues(self) -> None:
-        """T083: Process all queues and enforce guardrails."""
-        # This calls the QueueManager and Workers
-        # Guardrails enforced:
-        # - AutoSubmitGuardrailError blocks any automated platform report submissions
-        # - Rate limits checked before dispatching
-        pass
-        
+        """T083: Drain the classification queue.
+
+        The budget guard is deliberately allowed to stop the cycle rather than being
+        swallowed: FR-AG-7 lists cost limits among the guardrails the agent may not
+        override, so exhausting the budget must halt work, not degrade quietly.
+        """
+        from src.classifiers.classification_worker import ClassificationWorker
+        from src.core.budget import BudgetExceededError
+
+        worker = ClassificationWorker(self.session, self.queue_manager)
+        processed = 0
+
+        while processed < self.settings.max_review_batch_size:
+            item = await self.queue_manager.dequeue(QueueStage.CLASSIFICATION, worker_id="loop")
+            if item is None:
+                break
+            try:
+                await worker.process_item(item)
+            except BudgetExceededError:
+                log.error("Budget exhausted — pausing classification for this cycle")
+                raise
+            except Exception as exc:
+                log.exception("Classification failed", queue_item=item.id, error=str(exc))
+            processed += 1
+
+        if processed:
+            log.info("Classification queue processed", items=processed)
+
     async def _evaluate_expansion(self) -> None:
-        """T084: Reply sub-thread expansion based on hate density signal."""
-        # Agent decides to expand into reply threads only if hate density > threshold
-        pass
-        
+        """T084 / FR-AG-3: expand into reply threads only where hate is dense.
+
+        Crawling every reply everywhere is what gets accounts blocked. Density is the
+        signal that a thread is worth the extra requests.
+        """
+        stmt = select(Post).where(
+            Post.comments_total >= self.settings.expansion_min_comments,
+            Post.queue_state == PostQueueState.DONE,
+        )
+        for post in (await self.session.execute(stmt)).scalars():
+            if not post.comments_total:
+                continue
+            density = post.comments_flagged / post.comments_total
+            if density >= self.settings.expansion_hate_density and post.queue_priority < 10:
+                post.queue_priority = 10
+                log.info(
+                    "Thread marked for expansion",
+                    post_id=post.id,
+                    density=round(density, 2),
+                )
+        await self.session.commit()
+
     async def _prevent_reviewer_overload(self) -> None:
-        """T085: Auto-flagging and batching borderline items."""
-        # High confidence -> direct confirm stub logic
-        # Borderline -> batch to prevent overloading reviewers
-        pass
+        """T085 / FR-AG-4: batch borderline items rather than flooding the queue.
+
+        Reviewers are the bottleneck, and an unbounded queue during an incident is
+        how a monitoring programme quietly stops functioning. Above the cap the
+        borderline band waits; high-confidence items are never held back.
+        """
+        stmt = select(func.count(QueueItem.id)).where(QueueItem.stage == QueueStage.REVIEW)
+        depth = (await self.session.execute(stmt)).scalar_one()
+
+        if depth > self.settings.max_review_batch_size:
+            log.warning("Review queue above batch size, holding borderline items", depth=depth)
+            await self.dispatcher.send(
+                type_="ReviewerOverload",
+                context={"queue_depth": depth, "batch_size": self.settings.max_review_batch_size},
+                question=(
+                    f"Review queue is at {depth} items. Borderline items are being held "
+                    "so high-confidence ones stay visible."
+                ),
+                urgency="Medium",
+                suggested_actions=["Add reviewers", "Raise auto-flag threshold", "Acknowledge"],
+            )
+
+    async def _check_trends(self) -> None:
+        """Escalate on a spike, within the limits the agent cannot raise.
+
+        FR-AG-5: reactivating a dormant case needs case-manager confirmation unless
+        the pattern is trusted. FR-AG-7: a spike may raise crawl rate up to the
+        configured ceiling and no further — an incident must never be able to talk
+        the agent past a guardrail, because that is exactly when it would.
+        """
+        from src.core.self_tuner import SelfTuner
+        from src.core.trend_detector import TrendDetector
+
+        spikes = await TrendDetector(self.session).detect()
+        if not spikes:
+            return
+
+        tuner = SelfTuner(self.session)
+        for spike in spikes:
+            stmt = select(Case).where(
+                Case.state.in_([CaseState.COOLING, CaseState.DORMANT])
+            )
+            for case in (await self.session.execute(stmt)).scalars():
+                if not case.target_group or case.target_group.slug != spike.target_group:
+                    continue
+                if self.settings.auto_reactivate_cases:
+                    case.state = CaseState.REACTIVATED
+                    log.warning("Case auto-reactivated by spike", case_id=case.id)
+                else:
+                    await self.dispatcher.send(
+                        type_="CaseReactivationProposal",
+                        context={"case_id": case.id, "spike": spike.describe()},
+                        question=f"Reactivate this case? {spike.describe()}",
+                        urgency="High",
+                        suggested_actions=["Reactivate", "Ignore", "Adjust threshold"],
+                    )
+
+            # Shorter pacing while a spike lasts — clamped by the tuner's bounds.
+            current = await tuner.current("pacing_min_delay_seconds")
+            await tuner.adjust(
+                "pacing_min_delay_seconds",
+                max(1.0, current / self.settings.crawl_multiplier_on_spike),
+                f"spike: {spike.describe()}",
+            )
+
+            await self.dispatcher.send(
+                type_="HateSpeechSpike",
+                context={
+                    "target_group": spike.target_group,
+                    "platform": spike.platform,
+                    "density": spike.current,
+                    "baseline": spike.baseline,
+                    "zscore": spike.zscore,
+                },
+                question=spike.describe(),
+                urgency="High",
+                suggested_actions=["Open a case", "Increase monitoring", "Acknowledge"],
+            )
+
+    async def _check_liveness(self) -> None:
+        """Alert if collection has gone quiet.
+
+        A monitoring tool that stops collecting looks identical to one monitoring a
+        quiet period. Without this the failure is invisible until someone asks why
+        there have been no reports.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        stmt = select(TrackedAccount).where(TrackedAccount.status == AccountStatus.ACTIVE)
+        accounts = (await self.session.execute(stmt)).scalars().all()
+        if not accounts:
+            return
+
+        crawled = [a.last_crawled_at for a in accounts if a.last_crawled_at]
+        if not crawled:
+            return
+
+        latest = max(datetime.fromisoformat(c.replace("Z", "+00:00")) for c in crawled)
+        silent_for = datetime.now(timezone.utc) - latest
+
+        if silent_for > timedelta(hours=self.settings.dead_mans_switch_hours):
+            log.error("Collection has gone silent", hours=round(silent_for.total_seconds() / 3600))
+            await self.dispatcher.send(
+                type_="CollectionSilent",
+                context={"hours_since_last_crawl": silent_for.total_seconds() / 3600},
+                question=(
+                    f"No content collected for "
+                    f"{silent_for.total_seconds() / 3600:.0f} hours. Monitoring may have "
+                    "stopped without failing visibly."
+                ),
+                urgency="Critical",
+                suggested_actions=["Check worker accounts", "Check network", "Check logs"],
+            )
 
     async def run_cycle(self) -> None:
         """Run one full tick of the orchestration loop."""
@@ -110,6 +299,9 @@ class OrchestrationLoop:
         
         # 1. Schedule Cases (T036)
         await self._schedule_cases()
+
+        # 1b. Collect from due accounts — nothing else has anything to do without this
+        await self._collect()
         
         # 2. Process Notifications (T064, T066)
         await self._handle_notifications()
@@ -122,15 +314,18 @@ class OrchestrationLoop:
         
         # 5. Overload Prevention (T085)
         await self._prevent_reviewer_overload()
-        
-        # 2. Process Notifications (T064, T066)
-        await self._handle_notifications()
-        
+
         # 6. Autonomous Discovery (T070)
         await self.discovery.run_discovery()
         
         # 7. Check alerts (T073)
         await self._check_alerts()
+
+        # 8. Trend detection and escalation
+        await self._check_trends()
+
+        # 9. Dead man's switch — silent failure is how monitoring tools die unnoticed
+        await self._check_liveness()
         
         log.info("Orchestration cycle complete")
 

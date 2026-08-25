@@ -15,7 +15,8 @@ class ProxyManager:
 
     def __init__(self):
         self.settings = get_settings()
-        self.proxies = self.settings.proxy_list
+        # copy — get_settings() is lru_cached, mutating the list would corrupt it globally
+        self.proxies = list(self.settings.proxy_list)
         self._current_index = 0
 
     def get_proxy(self) -> str | None:
@@ -32,10 +33,18 @@ class ProxyManager:
         Validate that a proxy is not a datacenter IP.
         In a full implementation, this might call an IP-info API.
         """
-        # Stub implementation
-        self.session.add(proxy)
-        await self.session.commit()
-        log.warning("Proxy marked as failed", proxy=proxy.ip_address, reason=reason)
+        # ponytail: no datacenter-IP lookup yet, accepts anything non-empty.
+        # Add an ipinfo/ip-api check when residential proxies are actually provisioned.
+        return bool(proxy)
+
+    def mark_failed(self, proxy: str, reason: str) -> None:
+        """Drop a proxy from rotation after a block or connection failure."""
+        # ponytail: in-memory rotation, forgotten on restart. Persist to a proxies
+        # table if proxy health needs to survive a restart.
+        if proxy in self.proxies:
+            self.proxies.remove(proxy)
+            self._current_index = 0
+        log.warning("Proxy marked as failed", proxy=proxy, reason=reason)
 
     async def detect_home_ip_flagging(self, platform: str) -> bool:
         """T090: Detect if the home IP is rejected platform-wide."""

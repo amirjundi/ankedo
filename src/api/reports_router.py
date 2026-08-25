@@ -9,7 +9,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone, timedelta
 
-from src.core.database import get_session
+from src.core.database import session_scope
 from src.models.case import Case
 from src.models.post import Post
 
@@ -18,7 +18,7 @@ router = APIRouter(prefix="/api/reports", tags=["reports"])
 
 
 @router.get("/summary")
-async def get_summary_report(days: int = 30, session: AsyncSession = Depends(get_session)):
+async def get_summary_report(days: int = 30, session: AsyncSession = Depends(session_scope)):
     """T059: Generate summary report for a date range."""
     since_date = datetime.now(timezone.utc) - timedelta(days=days)
     since_iso = since_date.isoformat()
@@ -47,7 +47,7 @@ async def get_summary_report(days: int = 30, session: AsyncSession = Depends(get
 
 
 @router.get("/repeat-offenders")
-async def get_repeat_offenders_report(session: AsyncSession = Depends(get_session)):
+async def get_repeat_offenders_report(session: AsyncSession = Depends(session_scope)):
     """T060: Ranked list of tracked accounts by confirmed hate speech count."""
     # We aggregate Posts with hate_speech_flag=True group by tracked_account_id
     stmt = (
@@ -68,7 +68,7 @@ async def get_repeat_offenders_report(session: AsyncSession = Depends(get_sessio
     }
 
 @router.get("/stats/pages")
-async def get_page_stats(session: AsyncSession = Depends(get_session)):
+async def get_page_stats(session: AsyncSession = Depends(session_scope)):
     """T087: Implement per-page statistics endpoint."""
     # Stub: group by author/page and count total posts vs hate posts
     stmt = (

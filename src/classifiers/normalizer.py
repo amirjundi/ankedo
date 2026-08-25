@@ -1,47 +1,72 @@
 """
-Text Normalization - cleans and standardizes Arabic and Kurdish text.
-Handles Arabizi, diacritics, orthographic variants, and code-switching.
+Text normalization for Arabic and Kurdish.
+
+MIRRORS Ettok's `apps/hate_speech/normalize.py` and must stay byte-for-byte
+equivalent. The lexicon lives on the platform (see docs/AGENT_CONTRACT.md), so
+prefiltering here only works if both sides reduce text to the same canonical
+form. Any change to one side has to be made to the other, or matching silently
+degrades — no error, just missed hate speech.
+
+Divergence found and fixed 2026-08-25: this file previously folded yeh onto alef
+maksura (ى) while Ettok folds onto yeh (ي), which would have broken matching for
+every term containing either letter.
 """
 from __future__ import annotations
 
 import re
 
-class Normalizer:
-    """Standardizes text for classification."""
+# Harakat, superscript alef and tatweel are decoration, never lexical.
+_STRIP = re.compile("[ً-ْٰـ]")
 
-    def __init__(self):
-        # Stub mappings for Arabizi and common obfuscations
-        self.arabizi_map = {
-            "3": "ع",
-            "7": "ح",
-            "5": "خ",
-            "2": "ء",
-        }
-    
-    def strip_diacritics(self, text: str) -> str:
-        """Remove Arabic diacritics (Tashkeel)."""
-        # Arabic diacritics unicode range: 064B - 0652
-        diacritics = re.compile(r'[\u064B-\u0652]')
-        return re.sub(diacritics, '', text)
-        
-    def normalize_orthography(self, text: str) -> str:
-        """Normalize Alef, Yeh, and Teh Marbuta variants."""
-        text = re.sub(r'[إأآا]', 'ا', text)
-        text = re.sub(r'ة', 'ه', text)
-        text = re.sub(r'ي', 'ى', text)
-        return text
+_FOLD = str.maketrans(
+    {
+        # Alef variants — the failure the Duhok transcript demonstrates:
+        # "عبدة الشيطان" vs "الشيطآن" is the same word with a different alef.
+        "أ": "ا",
+        "إ": "ا",
+        "آ": "ا",
+        "ٱ": "ا",
+        # Alef maqsura, and the Farsi/Kurdish yeh that Kurdish keyboards produce.
+        "ى": "ي",
+        "ی": "ي",
+        # Ta marbuta is written as ha throughout Iraqi dialect.
+        "ة": "ه",
+        # Farsi/Kurdish kaf.
+        "ک": "ك",
+        # Arabic-Indic digits — the transcript writes the genocide year as ٢٠١٤.
+        "٠": "0",
+        "١": "1",
+        "٢": "2",
+        "٣": "3",
+        "٤": "4",
+        "٥": "5",
+        "٦": "6",
+        "٧": "7",
+        "٨": "8",
+        "٩": "9",
+    }
+)
+
+# Deliberately NOT folded: ئ ؤ ە ێ ۆ ڕ ڵ. Standard Arabic search normalization
+# collapses hamza carriers into alef, which would destroy Kurdish orthography —
+# ئێزیدی is not a misspelling of anything.
+
+
+def normalize(text: str) -> str:
+    """Return text in the canonical form used for lexicon matching."""
+    if not text:
+        return ""
+    return " ".join(_STRIP.sub("", text).translate(_FOLD).lower().split())
+
+
+class Normalizer:
+    """Object wrapper, kept because callers already hold an instance."""
 
     def normalize(self, text: str) -> str:
-        """Full normalization pipeline."""
-        if not text:
-            return ""
-            
-        text = self.strip_diacritics(text)
-        text = self.normalize_orthography(text)
-        
-        # In a full implementation, we'd add Arabizi transliteration here
-        
-        # Remove repeated characters (e.g. "حلوووو" -> "حلوو")
-        text = re.sub(r'(.)\1{2,}', r'\1\1', text)
-        
-        return text.strip().lower()
+        return normalize(text)
+
+    def strip_diacritics(self, text: str) -> str:
+        return _STRIP.sub("", text)
+
+    def normalize_orthography(self, text: str) -> str:
+        return text.translate(_FOLD)

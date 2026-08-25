@@ -36,13 +36,20 @@ class AccountLifecycleManager:
             last_used = datetime.fromisoformat(account.last_used_at.replace("Z", "+00:00"))
             hours_since_use = (now - last_used).total_seconds() / 3600
             
-            # WARM_UP to ACTIVE transition (Stub logic)
-            if account.stage == AccountStage.WARM_UP and account.trust_score > 0.5:
+            # WARM_UP to ACTIVE transition
+            # trust_score is a 0-100 int; the old `> 0.5` promoted anything above zero
+            if (
+                account.stage == AccountStage.WARM_UP
+                and account.trust_score >= self.settings.warmup_trust_threshold
+            ):
                 account.stage = AccountStage.ACTIVE
                 log.info("Account transitioned to ACTIVE", account_id=account.id)
-                
+
             # RECOVERY to ACTIVE transition
-            elif account.stage == AccountStage.RECOVERY and hours_since_use > 48:
+            elif (
+                account.stage == AccountStage.RECOVERY
+                and hours_since_use > self.settings.recovery_idle_hours
+            ):
                 account.stage = AccountStage.ACTIVE
                 log.info("Account recovered and transitioned to ACTIVE", account_id=account.id)
                 

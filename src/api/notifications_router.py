@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone
 
-from src.core.database import get_session
+from src.core.database import session_scope
 from src.models.agent_notification import AgentNotification, NotificationStatus
 
 log = structlog.get_logger()
@@ -24,7 +24,7 @@ class AdminResponse(BaseModel):
 
 
 @router.get("/")
-async def get_notifications(session: AsyncSession = Depends(get_session)):
+async def get_notifications(session: AsyncSession = Depends(session_scope)):
     """T063: Fetch pending notifications."""
     stmt = select(AgentNotification).where(AgentNotification.status == NotificationStatus.PENDING).order_by(AgentNotification.created_at.desc())
     result = await session.execute(stmt)
@@ -42,7 +42,7 @@ async def get_notifications(session: AsyncSession = Depends(get_session)):
 
 
 @router.post("/{notification_id}/respond")
-async def respond_to_notification(notification_id: str, response: AdminResponse, session: AsyncSession = Depends(get_session)):
+async def respond_to_notification(notification_id: str, response: AdminResponse, session: AsyncSession = Depends(session_scope)):
     """T063: Admin responds to a notification."""
     stmt = select(AgentNotification).where(AgentNotification.id == notification_id)
     result = await session.execute(stmt)

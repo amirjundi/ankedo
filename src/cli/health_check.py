@@ -90,10 +90,10 @@ def _check_optional_deps() -> Check:
     optional = [
         ("playwright", "playwright"),
         ("camoufox", "camoufox"),
+        ("google.genai", "google-genai"),
         ("openai", "openai"),
         ("anthropic", "anthropic"),
         ("aiogram", "aiogram"),
-        ("langgraph", "langgraph"),
     ]
     missing = []
     for module, package in optional:
@@ -127,22 +127,19 @@ def _check_api_key() -> Check:
         return Check("API Key", "fail", "No .env file", "Run: ankedo setup")
 
     content = ENV_FILE.read_text(encoding="utf-8")
-    has_openai = False
-    has_anthropic = False
+    providers = {"GEMINI_API_KEY": "Gemini", "OPENAI_API_KEY": "OpenAI", "ANTHROPIC_API_KEY": "Anthropic"}
 
-    for line in content.splitlines():
-        line = line.strip()
-        if line.startswith("OPENAI_API_KEY=") and len(line.split("=", 1)[1].strip()) > 10:
-            has_openai = True
-        if line.startswith("ANTHROPIC_API_KEY=") and len(line.split("=", 1)[1].strip()) > 10:
-            has_anthropic = True
+    found = [
+        name
+        for var, name in providers.items()
+        for line in content.splitlines()
+        if line.strip().startswith(f"{var}=") and len(line.split("=", 1)[1].strip()) > 10
+    ]
 
-    if has_openai or has_anthropic:
-        provider = "OpenAI" if has_openai else "Anthropic"
-        return Check("API Key", "pass", f"{provider} key configured")
-    else:
-        return Check("API Key", "fail", "No valid API key found",
-                      "Run: ankedo setup  (or set OPENAI_API_KEY in .env)")
+    if found:
+        return Check("API Key", "pass", f"{', '.join(found)} key configured")
+    return Check("API Key", "fail", "No valid API key found",
+                  "Run: ankedo setup  (or set GEMINI_API_KEY in .env)")
 
 
 def _check_database() -> Check:

@@ -78,6 +78,10 @@ ms-playwright/
 
 # Browser session data (contains auth tokens — never commit)
 sessions/
+
+# `ankedo backup` output — contains the database and evidence screenshots, i.e.
+# collected content about real people. Never versioned.
+backups/
 fingerprints/
 cookies/
 

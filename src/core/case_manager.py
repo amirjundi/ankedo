@@ -8,7 +8,8 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.models.case import Case, CaseState, CaseSeverity
+from src.classifiers.group_resolver import GroupResolver
+from src.models.case import Case, CaseState
 from src.core.settings import get_settings
 
 log = structlog.get_logger()
@@ -21,19 +22,41 @@ class CaseManager:
         self.session = session
         self.settings = get_settings()
 
-    async def create_case(self, target_group: str, seed_posts: list[str], watch_keywords: list[str], severity: CaseSeverity = CaseSeverity.MEDIUM) -> Case:
-        """Create a new Active case."""
+    async def create_case(
+        self,
+        target_group: str,
+        seed_posts: list[str],
+        watch_keywords: list[str],
+        severity: int | None = None,
+    ) -> Case:
+        """Create a new Active case.
+
+        `target_group` is a slug or any declared alias — resolved to the canonical
+        group so a case registered as "الإيزيديين" and a trope registered against
+        `yazidi` refer to the same thing.
+        """
+        resolver = GroupResolver(self.session)
+        group = await resolver.get(target_group) or None
+        if group is None:
+            slug = await resolver.resolve(target_group)
+            group = await resolver.get(slug) if slug else None
+        if group is None:
+            raise ValueError(
+                f"unknown target group {target_group!r} — install a knowledge pack "
+                "or add it to target_groups.yaml first"
+            )
+
         case = Case(
-            target_group=target_group,
+            target_group_id=group.id,
             seed_posts=seed_posts,
             watch_keywords=watch_keywords,
             state=CaseState.ACTIVE,
-            severity=severity,
-            last_activity_at=datetime.now(timezone.utc).isoformat()
+            severity=severity if severity is not None else self.settings.default_case_severity,
+            last_activity_at=datetime.now(timezone.utc).isoformat(),
         )
         self.session.add(case)
         await self.session.commit()
-        log.info("Created new case", case_id=case.id, target_group=target_group)
+        log.info("Created new case", case_id=case.id, target_group=group.slug)
         return case
 
     async def evaluate_lifecycle(self, case: Case) -> None:

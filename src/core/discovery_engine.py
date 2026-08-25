@@ -30,13 +30,17 @@ class DiscoveryEngine:
 
     async def _log_decision(self, event: str, inputs: dict, reasoning: str, action: str, notified: bool) -> None:
         """T069: Structured decision logging for all autonomous actions."""
-        # In a real system, this might go to a dedicated DB table or structured logger
-        log.info("Autonomous Decision", 
-                 event=event, 
-                 inputs=inputs, 
-                 reasoning=reasoning, 
-                 action=action, 
-                 admin_notified=notified)
+        # NFR-AU-2: autonomous decisions retain the inputs and reasoning that produced
+        # them. `decision=` rather than `event=` — structlog reserves `event` for the
+        # message itself, and passing it as a keyword collides with the positional arg.
+        log.info(
+            "Autonomous Decision",
+            decision=event,
+            inputs=inputs,
+            reasoning=reasoning,
+            action=action,
+            admin_notified=notified,
+        )
 
     async def run_discovery(self) -> None:
         """
@@ -52,7 +56,7 @@ class DiscoveryEngine:
         high_hate_density = True  # Stub
         
         if high_hate_density:
-            if self._cycle_auto_add_count < self.settings.max_auto_add_per_cycle:
+            if self._cycle_auto_add_count < self.settings.auto_add_accounts_per_cycle:
                 # T067: Auto-add to watch list
                 await self.watch_list.add_account("facebook", "stub_discovered_user")
                 self._cycle_auto_add_count += 1

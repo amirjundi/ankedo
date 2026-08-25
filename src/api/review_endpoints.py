@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.database import get_session
+from src.core.database import session_scope
 from src.core.queue_manager import QueueManager
 from src.models.post import Post, QueueState
 from src.models.queue_item import QueueItem, QueueStage
@@ -27,7 +27,7 @@ class ReviewSubmission(BaseModel):
 
 
 @router.get("/queue")
-async def get_review_queue(session: AsyncSession = Depends(get_session)):
+async def get_review_queue(session: AsyncSession = Depends(session_scope)):
     """Fetch items waiting in the review queue."""
     stmt = (
         select(QueueItem, Post)
@@ -58,7 +58,7 @@ async def get_review_queue(session: AsyncSession = Depends(get_session)):
 
 
 @router.post("/{queue_item_id}/submit")
-async def submit_review(queue_item_id: str, submission: ReviewSubmission, session: AsyncSession = Depends(get_session)):
+async def submit_review(queue_item_id: str, submission: ReviewSubmission, session: AsyncSession = Depends(session_scope)):
     """Submit a human review decision for a queued item."""
     stmt = select(QueueItem).where(QueueItem.id == queue_item_id)
     result = await session.execute(stmt)

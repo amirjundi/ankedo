@@ -20,10 +20,8 @@ dependencies = [
     "aiosqlite>=0.20.0",
     "alembic>=1.13.0",
 
-    # Multi-agent orchestration
-    "langgraph>=0.2.0",
-
     # LLM providers
+    "google-genai>=1.0.0",
     "openai>=1.40.0",
     "anthropic>=0.34.0",
 
@@ -48,8 +46,8 @@ dependencies = [
     # Chat channels
     "aiogram>=3.10.0",
 
-    # MCP client
-    "mcp[cli]>=1.0.0",
+    # Knowledge packs (taxonomy / lexicon / tropes)
+    "pyyaml>=6.0",
 
     # Utilities
     "structlog>=24.4.0",

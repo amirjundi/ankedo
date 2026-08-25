@@ -39,9 +39,11 @@ class CamoufoxWorker:
         # consistent headers, canvas, etc. Camoufox handles most of this automatically.
         proxy_dict = {"server": self.proxy} if self.proxy else None
         
+        # Headed mode matters operationally, not just for debugging: a human taking
+        # over a CAPTCHA needs a window to work in.
         self._browser = await AsyncCamoufox(
             playwright=self._playwright,
-            headless=True,
+            headless=self.settings.browser_headless,
             proxy=proxy_dict,
             # Pass a consistent path for session persistence
             user_data_dir=f"./sessions/{self.account_id}"

@@ -1,6 +1,13 @@
-"""
-Classification Worker - Processes items from the Classification Queue.
-Runs normalization, lexicon, trope engine, and committee orchestrator.
+"""Classification worker — drains the classification queue.
+
+Classifies the post, then each of its comments **in the context of that post**. The
+per-comment context is the whole point: a comment is judged against what it replies
+to, not in isolation (SRS §4.4.0).
+
+Also maintains the counts the platform needs for hate-density reporting
+(AGENT_CONTRACT amendment §1): `comments_total` is the denominator, and it only
+exists here — the platform never sees what was looked at and cleared, only what was
+flagged.
 """
 from __future__ import annotations
 
@@ -9,110 +16,127 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.classifiers.committee.orchestrator import CommitteeOrchestrator
-from src.classifiers.lexicon import LexiconMatcher
-from src.classifiers.normalizer import Normalizer
-from src.classifiers.trope_engine import TropeEngine
+from src.classifiers.context_bundle import build_bundle
 from src.core.queue_manager import QueueManager
+from src.core.settings import get_settings
 from src.models.comment import Comment
 from src.models.post import Post, QueueState as PostQueueState
 from src.models.queue_item import QueueItem, QueueStage
-from src.core.settings import get_settings
 
 log = structlog.get_logger()
 
 
 class ClassificationWorker:
-    """Async worker that classifies posts and comments."""
+    """Async worker that classifies posts and their comments."""
 
     def __init__(self, session: AsyncSession, queue_manager: QueueManager):
         self.session = session
         self.queue_manager = queue_manager
         self.settings = get_settings()
-        
-        # Initialize pipeline components
-        self.normalizer = Normalizer()
-        self.lexicon = LexiconMatcher(session)
-        self.trope_engine = TropeEngine(session)
-        self.orchestrator = CommitteeOrchestrator()
+        self._orchestrator: CommitteeOrchestrator | None = None
 
-    async def _classify_text(self, text: str, context: dict) -> dict:
-        """Run the full classification pipeline on a piece of text."""
-        lexicon_hits = await self.lexicon.scan_text(text)
-        tropes_fired = await self.trope_engine.evaluate(text, lexicon_hits)
-        
-        result = await self.orchestrator.run(
-            text=text,
-            context=context,
-            lexicon_hits=lexicon_hits,
-            tropes_fired=tropes_fired
-        )
-        return result
+    @property
+    def orchestrator(self) -> CommitteeOrchestrator:
+        """Built on first use.
+
+        Constructing it eagerly would require an LLM key just to instantiate the
+        worker, which would stop the whole orchestration loop — case scheduling,
+        notifications, capacity alerts — on a machine that has nothing queued to
+        classify.
+        """
+        if self._orchestrator is None:
+            self._orchestrator = CommitteeOrchestrator(self.session)
+        return self._orchestrator
 
     async def process_item(self, queue_item: QueueItem) -> bool:
-        """Process a QueueItem currently in Classification stage."""
         if queue_item.stage != QueueStage.CLASSIFICATION or not queue_item.post_id:
             return False
-            
-        log.info("Starting classification", post_id=queue_item.post_id)
 
-        # Get Post
-        stmt = select(Post).where(Post.id == queue_item.post_id)
-        result = await self.session.execute(stmt)
-        post = result.scalar_one_or_none()
-        
-        if not post:
+        post = (
+            await self.session.execute(select(Post).where(Post.id == queue_item.post_id))
+        ).scalar_one_or_none()
+        if post is None:
             await self.queue_manager.mark_done(queue_item)
             return False
 
-        # 1. Classify the post itself
-        post_text = post.content_text or post.ocr_text or ""
-        post_result = await self._classify_text(post_text, context={"type": "post"})
-        
-        post.classification_score = post_result["classification_score"]
-        post.hate_speech_flag = post_result["hate_speech_flag"]
-        post.multi_agent_trace = post_result["trace"]
-        
-        needs_review = False
-        if post.classification_score >= self.settings.auto_flag_threshold:
-            needs_review = True
-        elif self.settings.borderline_low <= post.classification_score <= self.settings.borderline_high:
-            needs_review = True # Route borderlines for review
+        log.info("Classifying post", post_id=post.id)
 
-        # 2. Classify all comments
-        stmt_cmts = select(Comment).where(Comment.post_id == post.id)
-        result_cmts = await self.session.execute(stmt_cmts)
-        comments = result_cmts.scalars().all()
-        
-        flagged_comments = 0
+        # --- the post itself ---------------------------------------------------
+        post_bundle = await build_bundle(self.session, post)
+        post_result = await self.orchestrator.run(post_bundle)
+
+        # A meme's payload is the image; its caption is often chosen to read as
+        # innocuous precisely so a text classifier clears it. The more severe of the
+        # two verdicts wins.
+        if post.media_classification:
+            from src.classifiers.media_analyzer import merge_with_text
+
+            post_result = merge_with_text(post_result, post.media_classification)
+
+        self._apply(post, post_result)
+
+        needs_review = self._needs_review(post_result)
+
+        # --- each comment, judged against the post ----------------------------
+        comments = (
+            await self.session.execute(select(Comment).where(Comment.post_id == post.id))
+        ).scalars().all()
+
+        flagged = 0
         for comment in comments:
-            comment_text = comment.text or ""
-            cmt_result = await self._classify_text(
-                comment_text, 
-                context={"type": "comment", "parent_post_text": post_text}
-            )
-            
-            comment.classification_score = cmt_result["classification_score"]
-            comment.hate_speech_flag = cmt_result["hate_speech_flag"]
-            comment.multi_agent_trace = cmt_result["trace"]
-            comment.context_bundle_used = post_text # Snapshot context
-            
-            if comment.classification_score >= self.settings.auto_flag_threshold:
-                flagged_comments += 1
+            if not (comment.text or "").strip():
+                continue
+            bundle = await build_bundle(self.session, post, comment)
+            result = await self.orchestrator.run(bundle)
+
+            comment.classification_score = result["classification_score"]
+            comment.hate_speech_flag = result["hate_speech_flag"]
+            comment.multi_agent_trace = result["trace"]
+            # The bundle, not a bare string — what was judged has to be reconstructable.
+            comment.context_bundle_used = bundle.to_dict()
+
+            if result["hate_speech_flag"]:
+                flagged += 1
+            if self._needs_review(result):
                 needs_review = True
-                
-        # 3. Update post statistics (T016)
+
         await self.queue_manager.record_post_statistics(
-            post_id=post.id, 
-            comments_total=len(comments), 
-            comments_flagged=flagged_comments
+            post_id=post.id, comments_total=len(comments), comments_flagged=flagged
         )
 
-        # 4. Route based on results
-        if needs_review or post_result["committee_disagreement"]:
-            log.info("Post flagged for review", post_id=post.id)
+        if needs_review:
+            log.info("Routing to review", post_id=post.id, flagged=flagged)
             await self.queue_manager.promote(queue_item, QueueStage.REVIEW)
         else:
-            log.info("Post clear, marking done", post_id=post.id)
             await self.queue_manager.mark_done(queue_item, final_state=PostQueueState.DONE)
-            
+
+        await self.session.commit()
         return True
+
+    def _needs_review(self, result: dict) -> bool:
+        """Route to a human on confidence, ambiguity, or disagreement (FR-CL-11)."""
+        score = result["classification_score"]
+        if result["verdict"] == "ambiguous" or result["committee_disagreement"]:
+            return True
+        if result["hate_speech_flag"] and score >= self.settings.auto_flag_threshold:
+            return True
+        return self.settings.borderline_low <= score <= self.settings.borderline_high
+
+    def _apply(self, post: Post, result: dict) -> None:
+        post.classification_score = result["classification_score"]
+        post.hate_speech_flag = result["hate_speech_flag"]
+        post.multi_agent_trace = result["trace"]
+        # FR-CL-14: record what produced the verdict, so it stays reproducible.
+        post.classification_model_versions = {
+            agent: (result["trace"].get(agent) or {}).get("model")
+            for agent in ("triage", "specialist", "critic")
+        }
+        post.lexicon_version = self._version(result, "lexicon_hits")
+        post.trope_version = self._version(result, "tropes_fired")
+
+    @staticmethod
+    def _version(result: dict, key: str) -> str | None:
+        for entry in result["trace"].get(key) or []:
+            if entry.get("pack_version"):
+                return entry["pack_version"]
+        return None

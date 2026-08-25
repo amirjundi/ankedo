@@ -1,0 +1,37 @@
+# Explicit-slur lexicon.
+#
+# NOT THE SOURCE OF TRUTH. The platform owns the lexicon — 75 curated terms live in
+# Ettok's HateSpeechLexicon, and `ankedo platform sync-lexicon` pulls them into the
+# local cache (docs/AGENT_CONTRACT.md, "Where the data lives"). Curator edits in the
+# dashboard reach every agent on the next sync.
+#
+# This file stays for two narrow cases:
+#   1. bootstrapping an agent that has never reached the platform
+#   2. offline/air-gapped testing
+#
+# Rows installed from here carry pack_source = <pack name>; synced rows carry
+# platform_id and pack_source = "ettok-platform". Sync only reconciles the latter,
+# so the two never clobber each other.
+#
+# Leave it empty unless you specifically need one of those two cases. Fabricated
+# slurs would produce false positives against real people and corrupt the gold set.
+#
+# `is_explicit: true`  -> flags regardless of the parent post's topic (FR-CL-4)
+# `is_explicit: false` -> contributes only when a target group is present in context;
+#                         raises review priority, does not flag on its own
+#
+# Template — copy, do not guess:
+#
+# - term: "<exact surface form>"
+#   target_group: yazidi            # must match a slug in target_groups.yaml
+#   dialect: [iraqi, msa]           # or: sorani, kurmanji
+#   script: [arabic]                # or: arabizi, latin
+#   is_explicit: true
+#   severity: 4                     # scale still undecided — SRS §7 Q2
+#   variants: []                    # spacing, letter swaps, emoji/leet substitution
+#   never_flag_when: [news_quotation, academic, counter_speech]
+#   source: "case-YYYY-<incident>"  # provenance is mandatory; pack verify enforces it
+#   added_by: "<expert id>"
+#   pack_version: "0.1.0"
+
+entries: []

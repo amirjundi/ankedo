@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.database import get_session
+from src.core.database import session_scope
 from src.models.tracked_account import TrackedAccount
 from src.models.post import Post
 
@@ -17,7 +17,7 @@ router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
 
 @router.get("/")
-async def list_tracked_accounts(session: AsyncSession = Depends(get_session)):
+async def list_tracked_accounts(session: AsyncSession = Depends(session_scope)):
     """List all tracked accounts (repeat offenders)."""
     stmt = select(TrackedAccount).order_by(TrackedAccount.created_at.desc()).limit(100)
     result = await session.execute(stmt)
@@ -27,7 +27,7 @@ async def list_tracked_accounts(session: AsyncSession = Depends(get_session)):
 
 
 @router.get("/{account_id}/history")
-async def get_account_history(account_id: str, session: AsyncSession = Depends(get_session)):
+async def get_account_history(account_id: str, session: AsyncSession = Depends(session_scope)):
     """T054: Get ban history, predecessor links, and hate speech timeline."""
     stmt = select(TrackedAccount).where(TrackedAccount.id == account_id)
     result = await session.execute(stmt)

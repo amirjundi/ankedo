@@ -1,0 +1,19 @@
+name: iraq-minorities
+version: 0.1.0
+license: TBD                  # decide before any redistribution
+maintainer: TBD
+languages: [ar, ckb, kmr]     # Arabic, Sorani, Kurmanji
+region: IQ
+description: >
+  Hate-speech knowledge pack for minority groups in Iraq: target-group taxonomy,
+  explicit-slur lexicon, context-dependent trope dictionary, and gold evaluation set.
+
+# STATUS: skeleton only.
+#
+# The taxonomy below is factual demographic data and is safe to extend.
+# The lexicon and trope dictionaries are DELIBERATELY near-empty: NFR-SF-2 requires
+# expert-defined content, and invented entries would poison the gold set at its root.
+# The single seeded trope is the one documented in the project's own SRS §4.4.0.
+#
+# See specs/004-knowledge-pack-schema/spec.md for the schema and collection method.
+status: skeleton

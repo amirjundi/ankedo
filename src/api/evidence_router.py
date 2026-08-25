@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.database import get_session
+from src.core.database import session_scope
 from src.models.evidence_package import EvidencePackage
 
 log = structlog.get_logger()
@@ -16,7 +16,7 @@ router = APIRouter(prefix="/api/evidence", tags=["evidence"])
 
 
 @router.get("/{package_id}")
-async def get_evidence_package(package_id: str, session: AsyncSession = Depends(get_session)):
+async def get_evidence_package(package_id: str, session: AsyncSession = Depends(session_scope)):
     """Fetch an evidence package by ID for manual review and submission."""
     stmt = select(EvidencePackage).where(EvidencePackage.id == package_id)
     result = await session.execute(stmt)

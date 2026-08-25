@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.database import get_session
+from src.core.database import session_scope
 
 from src.core.settings import get_settings
 
@@ -71,7 +71,7 @@ async def get_system_health():
     }
 
 @router.get("/audit/{item_id}")
-async def get_audit_trail(item_id: str, session: AsyncSession = Depends(get_session)):
+async def get_audit_trail(item_id: str, session: AsyncSession = Depends(session_scope)):
     """T086: Structured audit trail query endpoint for end-to-end tracing."""
     from src.models.post import Post
     from src.models.reviewer_decision import ReviewerDecision

@@ -30,8 +30,7 @@ class NotificationDispatcher:
             suggested_actions=suggested_actions or [],
             urgency=urgency,
             status=NotificationStatus.PENDING,
-            created_at=datetime.now(timezone.utc).isoformat()
-        )
+        )  # created_at is set by Base as a real datetime
         self.session.add(notif)
         await self.session.commit()
         
@@ -60,17 +59,28 @@ class NotificationDispatcher:
         now = datetime.now(timezone.utc)
         
         for notif in pending:
-            created = datetime.fromisoformat(notif.created_at.replace("Z", "+00:00"))
-            hours_pending = (now - created).total_seconds() / 3600
-            
-            if hours_pending > self.settings.notification_escalation_hours:
-                if notif.urgency != "High":
-                    notif.urgency = "High"
-                    log.warning("Escalating notification urgency", notif_id=notif.id)
-                    # Re-dispatch logic here
-                elif hours_pending > self.settings.notification_timeout_hours:
-                    notif.status = NotificationStatus.TIMEOUT
-                    log.error("Notification timed out with no response", notif_id=notif.id)
-                    # Agent continues autonomously
-                    
+            created = notif.created_at
+            if created.tzinfo is None:  # SQLite returns naive datetimes
+                created = created.replace(tzinfo=timezone.utc)
+            minutes_pending = (now - created).total_seconds() / 60
+
+            # FR-C011: raise urgency on an unanswered alert, then stop waiting.
+            # Checked timeout-first — with the order reversed, an alert that is
+            # already High can never reach TIMEOUT and waits forever.
+            if minutes_pending > self.settings.notification_timeout_minutes:
+                notif.status = NotificationStatus.TIMEOUT
+                log.error(
+                    "Notification timed out with no response",
+                    notif_id=notif.id,
+                    minutes=int(minutes_pending),
+                )
+                # The agent carries on autonomously; the unanswered question stays
+                # on the record rather than blocking the loop.
+            elif (
+                minutes_pending > self.settings.escalation_interval_minutes
+                and notif.urgency != "High"
+            ):
+                notif.urgency = "High"
+                log.warning("Escalating notification urgency", notif_id=notif.id)
+
         await self.session.commit()

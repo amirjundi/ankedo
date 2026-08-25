@@ -42,6 +42,17 @@ class Post(Base):
     queue_priority: Mapped[int] = mapped_column(Integer, default=0, nullable=False)  # higher = more urgent
     inflight_since: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
+    # Which group this post concerns (FR-CL-3). Case-supplied beats detected —
+    # target_group_source records which signal produced it.
+    target_group_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("target_groups.id"), nullable=True, index=True
+    )
+    target_group_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    dialect: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # Verdict on images/video frames, not merely OCR'd text — memes are the dominant
+    # vector and carry meaning no transcription preserves.
+    media_classification: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     # Classification
     classification_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     hate_speech_flag: Mapped[bool | None] = mapped_column(nullable=True)

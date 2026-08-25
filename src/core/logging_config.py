@@ -11,11 +11,29 @@ import structlog
 from src.core.settings import get_settings
 
 
+def _force_utf8_streams() -> None:
+    """Make stdout/stderr UTF-8.
+
+    Windows consoles default to a legacy codepage (cp1256 here, the Arabic one).
+    cp1256 covers Arabic but NOT Kurdish Sorani letters — ێ ڵ ۆ ڕ — so any Kurdish
+    output raises UnicodeEncodeError or corrupts silently. Both languages are the
+    product, so this is a correctness fix, not cosmetics.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        # pytest and other harnesses swap in objects without reconfigure()
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
 def configure_logging() -> None:
     """
     Configures structured logging for the agent.
     Outputs JSON logs to files and rich console logs to stdout.
     """
+    _force_utf8_streams()
     settings = get_settings()
 
     # Create logs dir if not exists

@@ -4,7 +4,7 @@ FastAPI entry point for the local admin and reviewer dashboard.
 from __future__ import annotations
 
 import structlog
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.review_endpoints import router as review_router
@@ -36,20 +36,32 @@ app = FastAPI(
     version="0.1.0"
 )
 
+from src.api.auth import require_admin
+from src.core.settings import get_settings
+
+_settings = get_settings()
+
+# `allow_origins=["*"]` with credentials enabled would let any site read the
+# dashboard through a logged-in browser. Restricted to configured origins.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Should be locked down to localhost in production config
+    allow_origins=_settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
-app.include_router(review_router)
-app.include_router(accounts_router)
-app.include_router(admin_router)
-app.include_router(evidence_router)
-app.include_router(reports_router)
-app.include_router(notifications_router)
+# Auth is applied at inclusion rather than per-endpoint, so a new endpoint is
+# protected by default. Forgetting a decorator should not silently expose data about
+# people who are already targets of violence.
+_protected = [Depends(require_admin)]
+
+app.include_router(review_router, dependencies=_protected)
+app.include_router(accounts_router, dependencies=_protected)
+app.include_router(admin_router, dependencies=_protected)
+app.include_router(evidence_router, dependencies=_protected)
+app.include_router(reports_router, dependencies=_protected)
+app.include_router(notifications_router, dependencies=_protected)
 
 @app.on_event("startup")
 async def startup_event():
@@ -63,9 +75,9 @@ async def startup_event():
         config = (await session.execute(stmt)).scalar_one_or_none()
         if config:
             try:
-                # In a real system, encrypted_credentials would be decrypted here.
-                # We'll assume for MVP it's stored as JSON plaintext {"token": "...", "admin_chat_id": ...}
-                creds = json.loads(config.encrypted_credentials)
+                from src.core.crypto import decrypt
+
+                creds = json.loads(decrypt(config.encrypted_credentials))
                 token = creds.get("token")
                 chat_id = creds.get("admin_chat_id")
                 if token and chat_id:

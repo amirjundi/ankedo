@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import enum
 
-from sqlalchemy import Enum, ForeignKey, String
+from sqlalchemy import Enum, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.models.base import Base
@@ -44,6 +44,13 @@ class TrackedAccount(Base):
     ban_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     first_seen_at: Mapped[str | None] = mapped_column(String(50), nullable=True)
     last_crawled_at: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    # Set each cycle by OrchestrationLoop._sync_workers from case state and account
+    # health. Pacing is the scaling knob here: crawling faster than a platform
+    # tolerates costs accounts, and an account costs far more than a slow cycle.
+    crawl_interval_seconds: Mapped[int] = mapped_column(Integer, default=300, nullable=False)
+    # Higher wins when the collector picks what to crawl next.
+    priority: Mapped[int] = mapped_column(Integer, default=0, nullable=False, index=True)
 
     # Relationships
     linked_case: Mapped["Case | None"] = relationship(  # noqa: F821
