@@ -11,6 +11,11 @@ specs/
 .specify/
 hate-speech-agent-requirements.md
 
+# Internal documentation and the curator workbook. The workbook is generated, so
+# it is reproducible without being published:
+#   python tools/make_lexicon_template.py docs/lexicon_data_entry_template.xlsx
+docs/
+
 # -----------------------------------------------------------------------------
 # SECRETS & LOCAL CONFIGURATION (never publish)
 # -----------------------------------------------------------------------------
