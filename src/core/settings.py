@@ -183,6 +183,17 @@ class AgentSettings(BaseSettings):
     # Vision browser
     # -----------------------------------------------------------------------
     browser_headless: bool = Field(default=True)
+
+    # Playwright refuses to download a browser for a distro its build registry does
+    # not know yet — Ubuntu 26.04 hits this, and collection is dead until it is
+    # resolved. Pointing at a browser already on the machine is the durable fix, so
+    # it has to be expressible in config rather than requiring a Playwright release.
+    browser_executable_path: Optional[str] = Field(
+        default=None, description="Absolute path to a Chromium/Firefox binary to use"
+    )
+    browser_channel: Optional[str] = Field(
+        default=None, description='Installed-browser channel, e.g. "chrome" or "chromium"'
+    )
     vision_max_steps_per_task: int = Field(default=12, ge=1)
     # Comma-separated hostnames the vision agent may drive. Empty = unrestricted,
     # which is only appropriate in development.

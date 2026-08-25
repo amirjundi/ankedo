@@ -17,6 +17,16 @@ from src.core.settings import get_settings
 log = structlog.get_logger()
 
 
+class BrowserUnavailable(RuntimeError):
+    """The browser could not be launched at all.
+
+    Distinct from a page that failed to load or a selector that moved: nothing can be
+    collected until a human or a repair fixes the installation. It is raised as its own
+    type so the orchestration loop can tell "this pass found nothing" apart from "this
+    agent has no eyes", which used to look identical in the logs.
+    """
+
+
 class CamoufoxWorker:
     """Worker managing an undetected browser session for a specific account."""
 
@@ -33,23 +43,57 @@ class CamoufoxWorker:
     async def start(self) -> None:
         """Launch the Camoufox browser and load the persistent session."""
         log.info("Starting Camoufox worker", account_id=self.account_id, platform=self.platform)
-        self._playwright = await async_playwright().start()
-        
+
         # In a real implementation, we would use the fingerprint seed to generate
         # consistent headers, canvas, etc. Camoufox handles most of this automatically.
         proxy_dict = {"server": self.proxy} if self.proxy else None
-        
-        # Headed mode matters operationally, not just for debugging: a human taking
-        # over a CAPTCHA needs a window to work in.
-        self._browser = await AsyncCamoufox(
-            playwright=self._playwright,
-            headless=self.settings.browser_headless,
-            proxy=proxy_dict,
+
+        options: dict[str, Any] = {
+            # Headed mode matters operationally, not just for debugging: a human taking
+            # over a CAPTCHA needs a window to work in.
+            "headless": self.settings.browser_headless,
+            "proxy": proxy_dict,
             # Pass a consistent path for session persistence
-            user_data_dir=f"./sessions/{self.account_id}"
-        )
-        self._context = self._browser.contexts[0] if self._browser.contexts else await self._browser.new_context()
-        self._page = await self._context.new_page()
+            "user_data_dir": f"./sessions/{self.account_id}",
+        }
+        # Only sent when set: passing executable_path=None overrides Camoufox's own
+        # bundled-browser resolution with nothing.
+        if self.settings.browser_executable_path:
+            options["executable_path"] = self.settings.browser_executable_path
+        if self.settings.browser_channel:
+            options["channel"] = self.settings.browser_channel
+
+        try:
+            self._playwright = await async_playwright().start()
+            self._browser = await AsyncCamoufox(playwright=self._playwright, **options)
+            self._context = (
+                self._browser.contexts[0]
+                if self._browser.contexts
+                else await self._browser.new_context()
+            )
+            self._page = await self._context.new_page()
+        except Exception as exc:
+            # Leave nothing half-started; a stranded Playwright process would hold the
+            # profile lock and make the next attempt fail for a different reason.
+            await self._abandon()
+            raise BrowserUnavailable(
+                f"could not launch a browser: {exc}. Run `ankedo doctor` for the cause."
+            ) from exc
+
+    async def _abandon(self) -> None:
+        """Tear down whatever managed to start, ignoring further failures."""
+        for closer in (
+            getattr(self._context, "close", None),
+            getattr(self._browser, "close", None),
+            getattr(self._playwright, "stop", None),
+        ):
+            if closer is None:
+                continue
+            try:
+                await closer()
+            except Exception:  # noqa: BLE001 — cleanup must not mask the real error
+                pass
+        self._context = self._browser = self._page = self._playwright = None
 
     async def stop(self) -> None:
         """Close the browser safely."""

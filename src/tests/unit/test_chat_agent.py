@@ -76,7 +76,9 @@ async def test_a_mutation_is_not_performed_on_the_models_say_so(session, monkeyp
 
     assert reply.pending == {
         "action": "set_config",
-        "arguments": {"key": "LOG_LEVEL", "value": "DEBUG", "days": 7, "limit": 10},
+        "arguments": {
+            "key": "LOG_LEVEL", "value": "DEBUG", "days": 7, "limit": 10, "what": "",
+        },
     }
     assert reply.action_run is None
     assert written == [], "the setting was written before anyone confirmed"
@@ -99,6 +101,30 @@ async def test_confirming_performs_it(session, monkeypatch):
 
 
 # ── The boundary ─────────────────────────────────────────────────────────────
+
+
+async def test_repairing_needs_confirmation_before_it_installs_anything(session, monkeypatch):
+    """The repair action can install software; the model asking is not consent."""
+    ran = []
+    monkeypatch.setattr(
+        "src.core.repairs.run_repair", lambda name: ran.append(name)
+    )
+
+    reply = await _agent(session, action="repair", what="browser").handle(
+        "the browser is broken, fix it"
+    )
+
+    assert ran == []
+    assert reply.pending == {
+        "action": "repair",
+        "arguments": {"key": "", "value": "", "days": 7, "limit": 10, "what": "browser"},
+    }
+    assert "browser" in reply.text and "install" in reply.text
+
+
+async def test_an_unknown_repair_name_is_refused(session):
+    with pytest.raises(ActionError, match="No repair called"):
+        await run_action("repair", session, {"what": "reformat_disk"})
 
 
 async def test_an_unregistered_action_cannot_be_invoked(session):

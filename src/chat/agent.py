@@ -65,6 +65,7 @@ class ChatDecision(BaseModel):
     value: str = Field(default="", description="New value, for set_config")
     days: int = Field(default=7, description="Days of history, for stats")
     limit: int = Field(default=10, description="Row count, for recent_flagged")
+    what: str = Field(default="", description="Which repair to run, for repair")
     message: str = Field(default="", description="What to say to the operator")
 
 
@@ -115,6 +116,7 @@ class ChatAgent:
             "value": decision.value,
             "days": decision.days,
             "limit": decision.limit,
+            "what": decision.what,
         }
 
         if action.mutating:
@@ -157,4 +159,6 @@ class ChatAgent:
             key = (arguments.get("key") or "").upper()
             current = getattr(get_settings(), key.lower(), "unset")
             return f"Change {key} from {current} to {arguments.get('value')}."
+        if name == "repair":
+            return f"Run the '{arguments.get('what')}' repair, which may install software."
         return f"Run {name}."

@@ -134,8 +134,36 @@ async def _recent_flagged(session: AsyncSession, limit: int = 10, **_) -> str:
 async def _health(session: AsyncSession, **_) -> str:
     from src.cli.health_check import run_checks
 
-    checks = run_checks()
-    return "\n".join(f"  {c.status.upper():5} {c.name}: {c.detail}" for c in checks)
+    lines = []
+    for check in run_checks():
+        line = f"  {check.status.upper():5} {check.name}: {check.detail}"
+        # The remedy used to be dropped here, so an operator asking the agent whether
+        # anything was wrong got told yes and not told what to do about it.
+        if check.status != "pass" and check.fix:
+            line += f"\n        → {check.fix}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+async def _repair(session: AsyncSession, what: str = "", **_) -> str:
+    """Run one named repair from the fixed registry in src/core/repairs.py."""
+    from src.core.repairs import REPAIRS, RepairError, catalogue, run_repair
+
+    what = (what or "").strip().lower()
+    if not what:
+        raise ActionError(f"Which repair? Available:\n{catalogue()}")
+    if what not in REPAIRS:
+        raise ActionError(f"No repair called {what!r}. Available:\n{catalogue()}")
+
+    try:
+        result = await run_repair(what)
+    except RepairError as exc:
+        raise ActionError(str(exc)) from exc
+
+    if result.proposed:
+        return f"{what} needs a human: {result.detail}"
+    prefix = "Repaired" if result.ok else "Could not repair"
+    return f"{prefix} {what}: {result.detail}"
 
 
 # ── Mutations ────────────────────────────────────────────────────────────────
@@ -195,6 +223,8 @@ ACTIONS: dict[str, Action] = {
         Action("health", "Run the system health checks", False, _health, {}),
         Action("set_config", "Change one configuration value", True, _set_config,
                {"key": f"one of: {', '.join(SETTABLE_KEYS)}", "value": "the new value"}),
+        Action("repair", "Fix a broken tool, e.g. the browser", True, _repair,
+               {"what": "browser, dependencies, directories or env_file"}),
     ]
 }
 

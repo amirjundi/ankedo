@@ -36,6 +36,9 @@ class OrchestrationLoop:
         # Latest CollectionStats, carrying the comments_scanned denominator the
         # platform needs for hate density (contract amendment §1).
         self.last_collection = None
+        # Whether the operator has already been told the browser is down. Reset on the
+        # first successful pass, so a recurrence is reported rather than swallowed.
+        self._browser_alert_sent = False
 
     async def _schedule_cases(self) -> None:
         """Evaluate case lifecycle and prioritize active cases."""
@@ -115,13 +118,39 @@ class OrchestrationLoop:
         platform that blocks us must not stop case scheduling, notifications or
         capacity alerts from running.
         """
+        from src.browsers.camoufox_worker import BrowserUnavailable
         from src.core.collection_runner import CollectionRunner
 
         try:
             self.last_collection = await CollectionRunner(self.session).run()
+        except BrowserUnavailable as exc:
+            # Distinct from a pass that found nothing: the agent has no eyes at all,
+            # and until now that looked identical in the logs. The dead man's switch
+            # would eventually fire CollectionSilent, six hours later and without
+            # naming the cause.
+            self.last_collection = None
+            log.error("Browser unavailable — collection cannot run", error=str(exc))
+            if not self._browser_alert_sent:
+                # Once, not every 60 seconds. A notification the operator learns to
+                # ignore is worse than none.
+                self._browser_alert_sent = True
+                await self.dispatcher.send(
+                    type_="ToolBroken",
+                    context={"tool": "browser", "error": str(exc)},
+                    question="Collection is stopped: the browser will not start.",
+                    urgency="Critical",
+                    suggested_actions=[
+                        "Run: ankedo doctor --fix",
+                        "Ask the agent in chat to repair the browser",
+                        "Run: ankedo doctor  (to see the cause)",
+                    ],
+                )
         except Exception as exc:
             log.exception("Collection pass failed", error=str(exc))
             self.last_collection = None
+        else:
+            # Re-arm, so a browser that breaks again is reported again.
+            self._browser_alert_sent = False
 
     async def _process_queues(self) -> None:
         """T083: Drain the classification queue.

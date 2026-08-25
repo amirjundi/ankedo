@@ -19,6 +19,8 @@ from rich.table import Table
 from rich.text import Text
 from rich import box
 
+from src.core.settings import get_settings
+
 console = Console()
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -223,20 +225,45 @@ def _check_database() -> Check:
 
 
 def _check_playwright() -> Check:
+    """Actually launch a browser, and fail — not warn — when it will not start.
+
+    This used to stat ~/.cache/ms-playwright for a non-empty directory, which passes on
+    a stale cache and cannot see the failure that matters: Playwright declining to
+    provide a browser for a distro its build registry does not know (Ubuntu 26.04). It
+    also returned `warn`, so `ankedo doctor` exited 0 while collection was dead.
+
+    A launch is slower than a stat. It is the only thing that answers the question.
+    """
     try:
-        import playwright
-        # Check if browsers are installed
-        pw_path = Path.home() / "AppData" / "Local" / "ms-playwright"
-        if not pw_path.exists():
-            pw_path = Path.home() / ".cache" / "ms-playwright"
-        if pw_path.exists() and any(pw_path.iterdir()):
-            return Check("Browser Engine", "pass", "Playwright browsers installed")
-        else:
-            return Check("Browser Engine", "warn", "Playwright installed but browsers missing",
-                          "Run: playwright install chromium")
+        from playwright.sync_api import sync_playwright
     except ImportError:
-        return Check("Browser Engine", "warn", "Playwright not installed (needed for collection)",
-                      "Run: pip install playwright && playwright install chromium")
+        return Check("Browser Engine", "fail", "Playwright not installed",
+                     "Run: pip install -e .")
+
+    settings = get_settings()
+    options: dict = {"headless": True}
+    if settings.browser_executable_path:
+        options["executable_path"] = settings.browser_executable_path
+    if settings.browser_channel:
+        options["channel"] = settings.browser_channel
+
+    try:
+        with sync_playwright() as pw:
+            browser = pw.firefox.launch(**options) if not options.get("channel") \
+                else pw.chromium.launch(**options)
+            browser.close()
+    except Exception as exc:
+        detail = str(exc).strip().splitlines()[0][:160] if str(exc).strip() else type(exc).__name__
+        using = settings.browser_executable_path or settings.browser_channel
+        return Check(
+            "Browser Engine", "fail",
+            f"Cannot launch a browser: {detail}",
+            "Run: ankedo doctor --fix" if not using
+            else f"Configured browser ({using}) will not start — check the path",
+        )
+
+    where = settings.browser_executable_path or settings.browser_channel or "bundled"
+    return Check("Browser Engine", "pass", f"Browser launches ({where})")
 
 
 def _check_directories() -> Check:
@@ -310,6 +337,46 @@ def run_checks() -> list[Check]:
     ]
 
 
+def _apply_repairs(checks: list[Check]) -> list[Check]:
+    """Run the registered repair for each failing check, then re-check.
+
+    Re-running is the point: a repair that claims success but leaves the check failing
+    is the failure mode worth catching, and it is the only way `--fix` can honestly
+    report what changed.
+    """
+    import asyncio as _asyncio
+
+    from src.core.repairs import RepairError, repairs_for, run_repair
+
+    attempted = False
+    for check in checks:
+        if check.status == "pass":
+            continue
+        for repair in repairs_for(check.name):
+            console.print(f"[dim]  Repairing {check.name}: {repair.description}...[/]")
+            try:
+                result = _asyncio.run(run_repair(repair.name))
+            except RepairError as exc:
+                console.print(f"  [red]✗ {exc}[/]")
+                continue
+
+            if result.proposed:
+                console.print(f"  [yellow]⚠ {result.detail}[/]")
+                continue
+            attempted = True
+            colour, mark = ("green", "✓") if result.ok else ("red", "✗")
+            console.print(f"  [{colour}]{mark} {result.detail}[/]")
+            if result.ok:
+                break
+
+    if not attempted:
+        return checks
+
+    console.print("[dim]  Re-checking...[/]")
+    get_settings.cache_clear()
+    return run_checks()
+
+
 def run_doctor(fix: bool = False):
     """Run all health checks and display results."""
     console.print()
@@ -326,12 +393,7 @@ def run_doctor(fix: bool = False):
 
     # Auto-fix if requested
     if fix:
-        for check in checks:
-            if check.status in ("warn", "fail") and check.name == "Directories":
-                for d in ["data", "evidence", "logs"]:
-                    (PROJECT_ROOT / d).mkdir(exist_ok=True)
-                check.status = "pass"
-                check.detail = "Created missing directories"
+        checks = _apply_repairs(checks)
 
     # Results table
     table = Table(box=box.ROUNDED, show_header=True, header_style="bold")
