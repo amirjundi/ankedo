@@ -122,6 +122,76 @@ async def cmd_remove_ig(message: Message):
         await message.answer(f"❌ Removed @{handle} from the Instagram monitoring allow-list.")
 
 
+# ── Free-text conversation ───────────────────────────────────────────────────
+# Registered last, so it only sees messages the command handlers above did not
+# claim. The four commands stay: /add_ig is one tap and always does exactly one
+# thing, which is worth more on a phone than phrasing a sentence.
+
+# A change the agent proposed, per chat, waiting on a yes. Held in memory rather
+# than the database: a pending confirmation should not survive a restart, because
+# the operator would be agreeing to something they can no longer see.
+_pending: dict[int, dict] = {}
+
+_YES = {"yes", "y", "ok", "okay", "confirm", "do it", "نعم", "تمام", "بەڵێ"}
+_NO = {"no", "n", "cancel", "stop", "لا", "نه", "نەخێر"}
+
+
+@dp.message()
+async def handle_conversation(message: Message):
+    if not is_authorized(message):
+        return
+
+    text = (message.text or "").strip()
+    if not text:
+        return
+
+    chat_id = message.chat.id
+    waiting = _pending.get(chat_id)
+
+    # An answer to a pending confirmation is not a new request.
+    if waiting:
+        answer = text.lower()
+        if answer in _YES:
+            _pending.pop(chat_id, None)
+            await _reply_from_agent(message, confirm=waiting)
+            return
+        if answer in _NO:
+            _pending.pop(chat_id, None)
+            await message.answer("Cancelled — nothing was changed.")
+            return
+        # Anything else replaces the pending change rather than being taken as
+        # consent to it. Silence is not agreement, and neither is a new question.
+        _pending.pop(chat_id, None)
+        await message.answer("[dropped the pending change]")
+
+    await _reply_from_agent(message, prompt=text)
+
+
+async def _reply_from_agent(message: Message, *, prompt: str = "", confirm: dict | None = None):
+    """Run one turn through the shared agent and answer."""
+    from src.chat.agent import ChatAgent
+
+    session_factory = get_session_factory()
+    try:
+        async with session_factory() as session:
+            agent = ChatAgent(session)
+            result = await agent.confirm(confirm) if confirm else await agent.handle(prompt)
+    except Exception as exc:  # a broken turn must not kill the polling loop
+        log.exception("Telegram chat turn failed")
+        await message.answer(f"Something went wrong: {exc}")
+        return
+
+    if result.pending:
+        _pending[message.chat.id] = result.pending
+        await message.answer(f"{result.text}\n\nReply yes to apply, or no to cancel.")
+        return
+
+    # Telegram rejects messages over 4096 characters.
+    body = result.text or "(no reply)"
+    for start in range(0, len(body), 3900):
+        await message.answer(body[start:start + 3900])
+
+
 async def start_telegram_bot(token: str, admin_chat_id: int):
     """Start the aiogram bot polling."""
     global bot, authorized_chat_id
