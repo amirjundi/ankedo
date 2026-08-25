@@ -126,6 +126,7 @@ async def install_pack(session: AsyncSession, pack_dir: Path) -> dict[str, int]:
         row.script = entry.get("script") or []
         row.is_explicit = entry.get("is_explicit", True)
         row.severity = entry.get("severity")
+        row.category = entry.get("category")
         row.variants = entry.get("variants") or []
         row.never_flag_when = entry.get("never_flag_when") or []
         row.source = entry.get("source")
@@ -152,6 +153,9 @@ async def install_pack(session: AsyncSession, pack_dir: Path) -> dict[str, int]:
         row.activation = entry.get("activation") or {}
         row.implicature = entry.get("implicature")
         row.severity = entry.get("severity")
+        row.category = entry.get("category")
+        row.is_visual = bool(entry.get("is_visual"))
+        row.visual_form = entry.get("visual_form")
         row.positive_examples = entry.get("positive_examples") or []
         row.negative_examples = entry.get("negative_examples") or []
         row.counter_speech_examples = entry.get("counter_speech_examples") or []
@@ -215,6 +219,7 @@ async def export_pack(session: AsyncSession, out_dir: Path, *, name: str, versio
                         "script": e.script,
                         "is_explicit": e.is_explicit,
                         "severity": e.severity,
+                        "category": e.category,
                         "variants": e.variants,
                         "never_flag_when": e.never_flag_when,
                         "source": e.source,
@@ -244,6 +249,9 @@ async def export_pack(session: AsyncSession, out_dir: Path, *, name: str, versio
                         "activation": t.activation,
                         "implicature": t.implicature,
                         "severity": t.severity,
+                        "category": t.category,
+                        "is_visual": t.is_visual,
+                        "visual_form": t.visual_form,
                         "positive_examples": t.positive_examples,
                         "negative_examples": t.negative_examples,
                         "counter_speech_examples": t.counter_speech_examples,

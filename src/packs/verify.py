@@ -45,6 +45,24 @@ def _entries(doc, key: str = "entries") -> list:
     return []
 
 
+def _category_errors(entry: dict, label: str) -> list[str]:
+    """Reject an unknown category rather than storing it.
+
+    Learned from the Ettok side: their gap-approval view silently rewrites an
+    unrecognised category to 'slur' and tells nobody, so a curator approving a
+    `mockery` term gets a slur in the lexicon and never finds out. Failing at import
+    is the only version of this that a human notices.
+    """
+    from src.classifiers.categories import BY_SLUG
+
+    category = entry.get("category")
+    if category and category not in BY_SLUG:
+        return [
+            f"{label}: unknown category {category!r}. Valid: {sorted(BY_SLUG)}"
+        ]
+    return []
+
+
 def _scope_errors(entry: dict, slugs: set[str], label: str) -> list[str]:
     """Validate an entry's group scope.
 
@@ -111,12 +129,14 @@ def verify_pack(pack_dir: Path, *, strict_gold: bool = False) -> VerifyResult:
         if not entry.get("source"):
             result.errors.append(f"lexicon[{label}]: missing 'source' — provenance is mandatory")
         result.errors.extend(_scope_errors(entry, slugs, f"lexicon[{label}]"))
+        result.errors.extend(_category_errors(entry, f"lexicon[{label}]"))
 
     for i, trope in enumerate(_entries(_load_yaml(pack_dir / "tropes.yaml"))):
         label = trope.get("trope_id", f"index {i}")
         if not trope.get("trope_id"):
             result.errors.append(f"tropes[{i}]: missing 'trope_id'")
         result.errors.extend(_scope_errors(trope, slugs, f"tropes[{label}]"))
+        result.errors.extend(_category_errors(trope, f"tropes[{label}]"))
         # A trope needs *something* to recognise it by, but not necessarily a literal
         # string. Pattern tropes — collective blame, "not an authentic people" — and
         # visual ones have no fixed wording; they are handed to the model as guidance.

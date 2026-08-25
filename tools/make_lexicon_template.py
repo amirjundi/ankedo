@@ -40,7 +40,15 @@ TARGET_GROUPS = [
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.classifiers.categories import CATEGORIES as _CATS, VISUAL_FORMS as _VIS  # noqa: E402
 
-CATEGORIES = [c.slug for c in _CATS if c.slug != "none"]
+# Ordered by how many of the 67 survey respondents named each form, so the
+# commonest sit at the top of a 14-item dropdown. A curator working in Arabic under
+# time pressure should not have to scroll past rare categories to reach mockery.
+CATEGORIES = [
+    c.slug
+    for c in sorted(_CATS, key=lambda c: -(c.reported_by or 0))
+    if c.slug != "none"
+]
+VISUAL_FORMS = [c.slug for c in sorted(_VIS, key=lambda c: -(c.reported_by or 0))]
 LANGUAGES = ["ar", "ku"]
 YES_NO = ["yes", "no"]
 

@@ -65,6 +65,7 @@ class LexiconMatcher:
                 "dialect": entry.dialect,
                 "is_explicit": entry.is_explicit,
                 "severity": entry.severity,
+                "category": entry.category,
                 "never_flag_when": entry.never_flag_when,
             }
             for surface in [entry.term, *(entry.variants or [])]:

@@ -39,6 +39,12 @@ class TropeDictionaryEntry(Base):
 
     implicature: Mapped[str | None] = mapped_column(Text, nullable=True)
     severity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    category: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
+    # The pattern lives in an image, so a text-only pass cannot see it. The Duhok
+    # survey documented eight visual forms, the two commonest being desecration of
+    # symbols (40/67) and AI-generated imagery (39/67).
+    is_visual: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    visual_form: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
     # positive/negative pairs are the unit of data. A trope with no negative examples
     # cannot be trusted and is rejected by `ankedo pack verify`.
