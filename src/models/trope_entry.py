@@ -53,6 +53,11 @@ class TropeDictionaryEntry(Base):
     counter_speech_examples: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
 
     confirmed_in_cases: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    # Provenance, same rule as a lexicon term: which transcript row or survey response
+    # this came from. A trope shapes what gets flagged, so it has to be as defensible
+    # as a term when a report is challenged.
+    source: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    added_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     pack_source: Mapped[str | None] = mapped_column(String(255), nullable=True)

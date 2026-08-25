@@ -135,6 +135,10 @@ def verify_pack(pack_dir: Path, *, strict_gold: bool = False) -> VerifyResult:
         label = trope.get("trope_id", f"index {i}")
         if not trope.get("trope_id"):
             result.errors.append(f"tropes[{i}]: missing 'trope_id'")
+        if not trope.get("source"):
+            # Same rule as a lexicon term. A trope decides what gets flagged, so it
+            # has to be as traceable as a term when someone challenges a report.
+            result.errors.append(f"tropes[{label}]: missing 'source' — provenance is mandatory")
         result.errors.extend(_scope_errors(trope, slugs, f"tropes[{label}]"))
         result.errors.extend(_category_errors(trope, f"tropes[{label}]"))
         # A trope needs *something* to recognise it by, but not necessarily a literal

@@ -160,6 +160,8 @@ async def install_pack(session: AsyncSession, pack_dir: Path) -> dict[str, int]:
         row.negative_examples = entry.get("negative_examples") or []
         row.counter_speech_examples = entry.get("counter_speech_examples") or []
         row.confirmed_in_cases = entry.get("confirmed_in_cases") or []
+        row.source = entry.get("source")
+        row.added_by = entry.get("added_by")
         row.enabled = entry.get("enabled", True)
         row.pack_source, row.pack_version = name, version
         counts["tropes"] += 1
@@ -256,6 +258,7 @@ async def export_pack(session: AsyncSession, out_dir: Path, *, name: str, versio
                         "negative_examples": t.negative_examples,
                         "counter_speech_examples": t.counter_speech_examples,
                         "confirmed_in_cases": t.confirmed_in_cases,
+                        "source": t.source,
                     }
                     for t in tropes
                 ]

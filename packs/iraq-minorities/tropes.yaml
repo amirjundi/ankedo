@@ -1,65 +1,47 @@
-# Trope dictionary — surface forms that are benign alone but hateful when a
-# target-group activation condition holds (FR-CL-7 / FR-CL-8).
-#
-# This is the project's core differentiator (FR-LE-2a): Iraqi coded speech is in no
-# model's training data. The dictionary IS the intelligence.
-#
-# A trope fires ONLY when its activation condition is satisfied by the context bundle.
-# A surface-form match with no satisfied condition raises review priority — it must
-# never auto-flag, or the system flags all devout speech.
-#
-# `negative_examples` is the field that decides whether this works.
-# `ankedo pack verify` FAILS a trope with an empty negative_examples list.
-
 entries:
-  # ---------------------------------------------------------------------------
-  # REFERENCE EXAMPLE — the worked case from SRS §4.4.0.
-  # Seeded because the SRS documents it. Everything else needs expert input.
-  # The example texts below still need expert review before being trusted as gold.
-  # ---------------------------------------------------------------------------
-  - trope_id: yazidi-devil-worship
-    target_group: yazidi
-    surface_forms:
-      - text: "اعوذ بالله من الشيطان الرجيم"
-        register: religious_formula      # routine pious phrase — meaningless alone
-      - text: "عبدة الشيطان"
-        register: direct_epithet         # "devil worshippers"
-    activation:
-      requires_target_group: true        # FR-CL-8 — never fires without Yazidi context
-      post_topic_any: [yazidi, sinjar, lalish]
-      negation_cancels: true             # "they are NOT devil worshippers" must not fire
-    implicature: >
-      Invokes the devil-worship libel against Yazidis — a defamation historically used
-      to justify violence, including the 2014 Sinjar genocide.
-    severity: 4                          # scale undecided — SRS §7 Q2
-    positive_examples:
-      - comment_text: "اعوذ بالله من الشيطان الرجيم"
-        parent_post_text: "مراسم دينية إيزيدية في معبد لالش"
-        why: >
-          The pious formula is directed at Yazidi religious practice, invoking the
-          devil-worship trope. Hostile despite containing no slur.
-    negative_examples:
-      - comment_text: "اعوذ بالله من الشيطان الرجيم"
-        parent_post_text: "شاهدوا هذا الثعبان الضخم في الحديقة"
-        why: >
-          Identical text, ordinary reaction to an unrelated post. No target group in
-          context, so the trope must NOT fire. This pair is the acceptance test.
-      - comment_text: "اعوذ بالله من الشيطان الرجيم"
-        parent_post_text: "خطبة الجمعة اليوم عن الصبر"
-        why: Routine devout speech in a religious context unrelated to any minority.
-    counter_speech_examples:
-      - comment_text: "الإيزيديون ليسوا عبدة الشيطان، هذا افتراء"
-        parent_post_text: "مراسم دينية إيزيدية في معبد لالش"
-        why: >
-          Contains the surface form while explicitly refuting it. negation_cancels
-          must suppress this — flagging defenders is the highest-cost false positive.
-    confirmed_in_cases: []
-    pack_version: "0.1.0"
+- trope_id: yazidi-devil-worship
+  target_group: yazidi
+  surface_forms:
+  - text: اعوذ بالله من الشيطان الرجيم
+    register: religious_formula
+  - text: عبدة الشيطان
+    register: direct_epithet
+  activation:
+    requires_target_group: true
+    post_topic_any:
+    - yazidi
+    - sinjar
+    - lalish
+    negation_cancels: true
+  implicature: 'Invokes the devil-worship libel against Yazidis — a defamation historically
+    used to justify violence, including the 2014 Sinjar genocide.
 
-# EXPERT INPUT NEEDED — candidate tropes to document from confirmed incidents:
-#   - per-group implicatures for shabak, kakai, sabian-mandaean, christian-iraqi
-#   - accusations of foreign loyalty / not-really-Iraqi framing
-#   - purity/contamination framing around food, marriage, water
-#   - property and displacement narratives ("they took our land")
-# Do NOT add any of these speculatively. Each entry needs a real `source` incident
-# and at least as many negative_examples as positive ones (specs/004 §3).
+    '
+  severity: 4
+  positive_examples:
+  - comment_text: اعوذ بالله من الشيطان الرجيم
+    parent_post_text: مراسم دينية إيزيدية في معبد لالش
+    why: 'The pious formula is directed at Yazidi religious practice, invoking the
+      devil-worship trope. Hostile despite containing no slur.
+
+      '
+  negative_examples:
+  - comment_text: اعوذ بالله من الشيطان الرجيم
+    parent_post_text: شاهدوا هذا الثعبان الضخم في الحديقة
+    why: 'Identical text, ordinary reaction to an unrelated post. No target group
+      in context, so the trope must NOT fire. This pair is the acceptance test.
+
+      '
+  - comment_text: اعوذ بالله من الشيطان الرجيم
+    parent_post_text: خطبة الجمعة اليوم عن الصبر
+    why: Routine devout speech in a religious context unrelated to any minority.
+  counter_speech_examples:
+  - comment_text: الإيزيديون ليسوا عبدة الشيطان، هذا افتراء
+    parent_post_text: مراسم دينية إيزيدية في معبد لالش
+    why: 'Contains the surface form while explicitly refuting it. negation_cancels
+      must suppress this — flagging defenders is the highest-cost false positive.
+
+      '
+  confirmed_in_cases: []
+  pack_version: 0.1.0
+  source: duhok-focus-group row 3 (SRS 4.4.0 worked example)

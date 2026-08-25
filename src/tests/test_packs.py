@@ -78,6 +78,7 @@ def test_pattern_tropes_need_no_surface_forms(tmp_path):
         "implicature": "Treating one member's act as proof of a community trait.",
         "activation": {"requires_target_group": True},
         "negative_examples": [{"comment_text": "this person behaved badly"}],
+        "source": "duhok-focus-group row 10",
     })
     tropes_file.write_text(yaml.safe_dump(doc, allow_unicode=True), encoding="utf-8")
 
@@ -100,6 +101,7 @@ def test_a_trope_with_nothing_to_recognise_is_rejected(tmp_path):
         "target_group": "yazidi",
         "surface_forms": [],
         "negative_examples": [{"comment_text": "x"}],
+        "source": "test",
     })
     tropes_file.write_text(yaml.safe_dump(doc, allow_unicode=True), encoding="utf-8")
 
