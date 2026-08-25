@@ -184,8 +184,19 @@ fi
 
 # ── Step 4: Install Playwright Browsers ───────────────────────────────────
 step "Installing browser engine (Playwright)..."
-python -m playwright install chromium 2>/dev/null && ok "Chromium browser installed" || \
-    warn "Browser install failed (you can do this later: playwright install chromium)"
+if python -m playwright install chromium 2>/dev/null; then
+    ok "Chromium browser installed"
+else
+    # Playwright refuses to download for a distro its build registry does not know
+    # yet — Ubuntu 26.04 hits this. Collection needs a browser, so say what to try
+    # rather than leaving a bare "failed".
+    warn "Browser install failed"
+    info "Everything else is installed; collection needs a browser to run."
+    info "Try, in order:"
+    echo -e "  ${DIM}  pip install -U playwright && playwright install chromium${NC}"
+    echo -e "  ${DIM}  sudo apt install chromium-browser   # then point Playwright at it${NC}"
+    info "Classification and the dashboard work without it."
+fi
 
 # ── Step 5: Create Data Directories ──────────────────────────────────────
 step "Creating data directories..."

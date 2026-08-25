@@ -177,23 +177,39 @@ def _check_platform() -> Check:
 
 
 def _check_api_key() -> Check:
+    """Check the key for the *selected* provider.
+
+    Passing on any key of any provider is how a config with LLM_PROVIDER=gemini and
+    only an OPENAI_API_KEY set reported healthy and then died on the first
+    classification. The point of a doctor is to fail here instead.
+    """
     if not ENV_FILE.exists():
         return Check("API Key", "fail", "No .env file", "Run: ankedo setup")
 
-    content = ENV_FILE.read_text(encoding="utf-8")
-    providers = {"GEMINI_API_KEY": "Gemini", "OPENAI_API_KEY": "OpenAI", "ANTHROPIC_API_KEY": "Anthropic"}
+    values: dict[str, str] = {}
+    for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, _, value = line.partition("=")
+            values[key.strip()] = value.strip()
 
-    found = [
-        name
-        for var, name in providers.items()
-        for line in content.splitlines()
-        if line.strip().startswith(f"{var}=") and len(line.split("=", 1)[1].strip()) > 10
-    ]
+    provider = (values.get("LLM_PROVIDER") or "gemini").lower()
+    expected = {"gemini": ("GEMINI_API_KEY", "Gemini"),
+                "openai": ("OPENAI_API_KEY", "OpenAI-compatible")}.get(provider)
+    if expected is None:
+        return Check("API Key", "fail", f"Unknown LLM_PROVIDER={provider!r}",
+                     "Set it to 'gemini' or 'openai'")
 
-    if found:
-        return Check("API Key", "pass", f"{', '.join(found)} key configured")
-    return Check("API Key", "fail", "No valid API key found",
-                  "Run: ankedo setup  (or set GEMINI_API_KEY in .env)")
+    var, label = expected
+    if len(values.get(var, "")) > 10:
+        endpoint = values.get("OPENAI_BASE_URL")
+        detail = f"{label} key configured"
+        if provider == "openai" and endpoint:
+            detail += f" → {endpoint}"
+        return Check("API Key", "pass", detail)
+
+    return Check("API Key", "fail", f"LLM_PROVIDER={provider} but {var} is not set",
+                 f"Run: ankedo configure set {var}=...")
 
 
 def _check_database() -> Check:
