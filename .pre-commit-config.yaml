@@ -1,0 +1,36 @@
+# Guards against the realistic leak in a public repo: a staff member pasting a key
+# into a file, not an attacker reading the source. The code being public is fine —
+# credentials live in .env, which is gitignored.
+#
+#   pip install pre-commit && pre-commit install
+#
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: detect-private-key
+      - id: check-added-large-files
+        args: [--maxkb=2048]
+      # Screenshots and databases hold collected content about real people, so a
+      # stray one must never reach history.
+      - id: check-case-conflict
+      - id: end-of-file-fixer
+        exclude: '\.xlsx$'
+      - id: trailing-whitespace
+        exclude: '\.(xlsx|md)$'
+
+  - repo: local
+    hooks:
+      - id: no-secrets
+        name: no API keys or tokens in tracked files
+        entry: python tools/check_secrets.py
+        language: system
+        pass_filenames: true
+        # .env is gitignored, so anything reaching this hook is already a mistake.
+        exclude: '^(\.env\.example|docs/.*\.md|specs/.*\.md)$'
+
+      - id: no-collected-content
+        name: no evidence, screenshots or databases
+        entry: python tools/check_secrets.py --paths-only
+        language: system
+        pass_filenames: true

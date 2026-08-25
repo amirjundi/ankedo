@@ -135,9 +135,44 @@ class EttokClient:
         `scan_requested` is one-shot — the platform clears the flag when handing it
         over, so a caller that drops the response has lost that scan.
         """
-        return await self._request(
+        response = await self._request(
             "POST", "heartbeat/", json={"agent_id": self.agent_id, "status": status}
         )
+        self._maybe_rotate_key(response)
+        return response
+
+    def _maybe_rotate_key(self, response: dict) -> None:
+        """Adopt a replacement key the platform offers on heartbeat.
+
+        Rotation only happens in practice if it costs nothing. The platform issues the
+        new key while the old one still works, the agent picks it up here, and the old
+        one is revoked after the overlap window — so no scan is missed and nobody has
+        to schedule downtime.
+
+        The new key is written to .env rather than held in memory, or the next restart
+        would fall back to a key that is about to be revoked.
+        """
+        rotated = response.get("rotate_key")
+        if not rotated or rotated == self.agent_key:
+            return
+
+        self.agent_key = rotated
+        self._client.headers["Authorization"] = f"Bearer {rotated}"
+
+        try:
+            _persist_key(rotated)
+            log.warning(
+                "Agent key rotated by the platform — .env updated",
+                agent_id=self.agent_id,
+            )
+        except OSError as exc:
+            # In memory the new key still works for this run; a restart would revert
+            # to the old one, so this needs a human before the overlap window closes.
+            log.error(
+                "Key rotated but .env could not be written — this run is fine, "
+                "the next restart will use the old key",
+                error=str(exc),
+            )
 
     async def get_tasks(self) -> dict:
         """What to scan this run."""
@@ -178,3 +213,27 @@ class EttokClient:
     async def post_cookies(self, payload: dict) -> dict:
         """Persist refreshed session cookies."""
         return await self._request("POST", "cookies/", json=payload)
+
+
+def _persist_key(new_key: str) -> None:
+    """Replace ETTOK_AGENT_KEY in .env, leaving every other line untouched.
+
+    Written to disk rather than kept in memory: the old key is revoked once the
+    overlap window closes, so an agent that only held the new one in memory would
+    come back after a restart using a key that no longer works.
+    """
+    from pathlib import Path
+
+    env = Path(__file__).resolve().parent.parent.parent / ".env"
+    if not env.exists():
+        return
+
+    lines = env.read_text(encoding="utf-8").splitlines()
+    for index, line in enumerate(lines):
+        if line.strip().startswith("ETTOK_AGENT_KEY="):
+            lines[index] = f"ETTOK_AGENT_KEY={new_key}"
+            break
+    else:
+        lines.append(f"ETTOK_AGENT_KEY={new_key}")
+
+    env.write_text("\n".join(lines) + "\n", encoding="utf-8")

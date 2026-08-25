@@ -122,6 +122,60 @@ def _check_env_file() -> Check:
                       "Run: ankedo setup")
 
 
+def _check_platform() -> Check:
+    """Is the Ettok connection configured and reachable?
+
+    Worth a routine check rather than only failing mid-scan: the agent caches the
+    lexicon, so it keeps classifying for a while after the platform becomes
+    unreachable. The failure is quiet until submissions start piling up.
+    """
+    if not ENV_FILE.exists():
+        return Check("Ettok Platform", "warn", "No .env file", "Run: ankedo setup")
+
+    content = ENV_FILE.read_text(encoding="utf-8")
+    values = {}
+    for line in content.splitlines():
+        if "=" in line and not line.strip().startswith("#"):
+            key, _, value = line.partition("=")
+            values[key.strip()] = value.split("#")[0].strip()
+
+    key = values.get("ETTOK_AGENT_KEY", "")
+    base = values.get("ETTOK_BASE_URL", "")
+    if not key or not base:
+        return Check(
+            "Ettok Platform", "warn", "Not connected (agent runs standalone)",
+            "Run: ankedo setup",
+        )
+
+    try:
+        import httpx
+
+        resp = httpx.post(
+            base.rstrip("/") + "/heartbeat/",
+            headers={
+                "Authorization": f"Bearer {key}",
+                "X-Agent-Id": values.get("ETTOK_AGENT_ID", "ankedo-agent"),
+            },
+            json={"agent_id": values.get("ETTOK_AGENT_ID", "ankedo-agent"), "status": "doctor"},
+            timeout=10,
+        )
+    except Exception as exc:
+        return Check(
+            "Ettok Platform", "fail", f"Unreachable ({type(exc).__name__})",
+            "Check network and ETTOK_BASE_URL",
+        )
+
+    if resp.status_code == 401:
+        return Check("Ettok Platform", "fail", "Key rejected or revoked",
+                     "Issue a new key in the Django admin")
+    if resp.status_code == 403:
+        return Check("Ettok Platform", "fail", "Key lacks the hate_speech_scan scope",
+                     "Re-issue with the correct scope")
+    if resp.status_code >= 400:
+        return Check("Ettok Platform", "fail", f"HTTP {resp.status_code}", "Check the platform")
+    return Check("Ettok Platform", "pass", "Connected")
+
+
 def _check_api_key() -> Check:
     if not ENV_FILE.exists():
         return Check("API Key", "fail", "No .env file", "Run: ankedo setup")
@@ -236,6 +290,7 @@ def run_doctor(fix: bool = False):
         _check_optional_deps(),
         _check_env_file(),
         _check_api_key(),
+        _check_platform(),
         _check_database(),
         _check_playwright(),
         _check_directories(),

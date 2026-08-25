@@ -130,6 +130,52 @@ def _validate_api_key(provider_id: str, api_key: str, base_url: str | None = Non
     return False
 
 
+def _default_agent_id() -> str:
+    """Hostname-based, so two agents are distinguishable in the platform's logs.
+
+    A shared default means every agent reports as the same X-Agent-Id, and the
+    platform cannot tell which machine sent what — which matters when one of them
+    starts hitting checkpoints.
+    """
+    import socket
+
+    host = socket.gethostname().lower().replace(" ", "-")
+    return f"ankedo-{host}"[:64] or "ankedo-agent"
+
+
+def _validate_agent_key(base_url: str, agent_key: str, agent_id: str) -> tuple[bool, str]:
+    """Call heartbeat/ so a bad key fails while the operator still has it on screen.
+
+    Distinguishes the three failures that need different fixes: a rejected key, an
+    unreachable host, and a key that is valid but lacks the scope.
+    """
+    try:
+        import httpx
+    except ImportError:
+        return True, "httpx not installed — skipped"
+
+    url = base_url.rstrip("/") + "/heartbeat/"
+    try:
+        resp = httpx.post(
+            url,
+            headers={"Authorization": f"Bearer {agent_key}", "X-Agent-Id": agent_id},
+            json={"agent_id": agent_id, "status": "setup"},
+            timeout=15,
+        )
+    except Exception as exc:
+        return False, f"could not reach {url} ({type(exc).__name__})"
+
+    if resp.status_code == 401:
+        return False, "key rejected — unknown or revoked"
+    if resp.status_code == 403:
+        return False, "key is valid but lacks the hate_speech_scan scope"
+    if resp.status_code >= 500:
+        return False, f"platform error {resp.status_code} — the key may still be fine"
+    if resp.status_code >= 400:
+        return False, f"HTTP {resp.status_code}"
+    return True, "ok"
+
+
 def _mask_key(key: str) -> str:
     if len(key) <= 8:
         return "****"
@@ -177,7 +223,7 @@ def run_setup(non_interactive: bool = False, reconfigure: bool = False):
     _banner()
 
     existing = _load_existing_env()
-    total_steps = 5
+    total_steps = 6
 
     # ── Handle existing config ───────────────────────────────────────────
     if existing and not reconfigure and not non_interactive:
@@ -328,8 +374,53 @@ def run_setup(non_interactive: bool = False, reconfigure: bool = False):
     else:
         console.print("[dim]  ⏭  WhatsApp skipped[/]")
 
-    # ── Step 5: Review & Save ────────────────────────────────────────────
-    _step_header(5, total_steps, "Review & Save")
+    # ── Step 5: Ettok Platform ───────────────────────────────────────────
+    _step_header(5, total_steps, "Ettok Platform Connection")
+
+    console.print(
+        "The platform owns the lexicon and holds the review queue. The agent pulls\n"
+        "terms from it each run and submits what it finds.\n"
+    )
+    console.print(
+        "[dim]Create a key in the Django admin under 'Agent keys' with the\n"
+        "hate_speech_scan scope. The plaintext is shown once and cannot be recovered.[/]\n"
+    )
+
+    if Confirm.ask("Connect to an Ettok platform now?", default=True):
+        base_url = Prompt.ask(
+            "  Platform URL",
+            default=config.get("ETTOK_BASE_URL") or "https://ettok.net/api/hermes/",
+        )
+        agent_key = Prompt.ask("  Agent key", password=True)
+        # Hostname rather than a fixed default, so two agents are distinguishable in
+        # the platform's logs without anyone configuring it.
+        agent_id = Prompt.ask("  Agent ID", default=_default_agent_id())
+
+        if agent_key:
+            console.print("\n  [dim]Verifying...[/]", end=" ")
+            ok, detail = _validate_agent_key(base_url, agent_key, agent_id)
+            if ok:
+                console.print("[green]✓ connected[/]")
+            else:
+                # Told now, while the key is still on screen — not on the first scan.
+                console.print(f"[red]✗ {detail}[/]")
+                if not Confirm.ask("  Save it anyway?", default=False):
+                    agent_key = ""
+
+        if agent_key:
+            config["ETTOK_BASE_URL"] = base_url
+            config["ETTOK_AGENT_KEY"] = agent_key
+            config["ETTOK_AGENT_ID"] = agent_id
+    else:
+        console.print(
+            "[dim]  Skipped. The agent runs standalone; re-run `ankedo setup` to\n"
+            "  connect later.[/]"
+        )
+
+    console.print()
+
+    # ── Step 6: Review & Save ────────────────────────────────────────────
+    _step_header(6, total_steps, "Review & Save")
 
     # Fill in defaults for anything not set
     config.setdefault("DATABASE_URL", "sqlite+aiosqlite:///./data/ankedo.db")
@@ -374,6 +465,13 @@ def run_setup(non_interactive: bool = False, reconfigure: bool = False):
     summary.add_row(
         "WhatsApp",
         "[green]Configured ✓[/]" if config.get("WHATSAPP_ACCESS_TOKEN") else "[dim]Not configured[/]",
+    )
+    summary.add_row("", "")
+    summary.add_row(
+        "Ettok Platform",
+        f"[green]{config['ETTOK_BASE_URL']} ✓[/]"
+        if config.get("ETTOK_AGENT_KEY")
+        else "[dim]Not connected[/]",
     )
     summary.add_row("", "")
     summary.add_row("Dashboard", f"http://{config['API_HOST']}:{config['API_PORT']}")
