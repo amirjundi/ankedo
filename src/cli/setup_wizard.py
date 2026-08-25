@@ -425,10 +425,12 @@ def run_setup(non_interactive: bool = False, reconfigure: bool = False):
 
     provider_ids = list(PROVIDERS)
     console.print("Which provider should the classification committee use?\n")
-    console.print("  [cyan]1[/] Google Gemini      [dim]— recommended: reproducible, and")
-    console.print("                        safety filters can be turned off[/]")
-    console.print("  [cyan]2[/] OpenAI-compatible  [dim]— OpenAI, OpenRouter, Groq, Together,")
-    console.print("                        DeepSeek, Ollama, LM Studio[/]\n")
+    # Each print parses its own markup, so a tag opened in one call and closed in the
+    # next raises MarkupError. Keep every tag opened and closed in the same string.
+    console.print("  [cyan]1[/] Google Gemini      [dim]— recommended: reproducible,[/]")
+    console.print("                        [dim]and safety filters can be turned off[/]")
+    console.print("  [cyan]2[/] OpenAI-compatible  [dim]— OpenAI, OpenRouter, Groq,[/]")
+    console.print("                        [dim]Together, DeepSeek, Ollama, LM Studio[/]\n")
     console.print(
         "[dim]This tool has to read hate speech to classify it. Gemini lets the client\n"
         "disable the filters that would block exactly those items; OpenAI-compatible\n"
@@ -509,8 +511,10 @@ def run_setup(non_interactive: bool = False, reconfigure: bool = False):
     # ── Step 4: Notification Channels ────────────────────────────────────
     _step_header(4, total_steps, "Notification Channels (Optional)")
 
-    console.print("[dim]The agent can notify you via Telegram or WhatsApp.")
-    console.print("You can skip this and configure later with: ankedo configure[/]\n")
+    console.print(
+        "[dim]The agent can notify you via Telegram or WhatsApp.\n"
+        "You can skip this and configure later with: ankedo configure[/]\n"
+    )
 
     # Telegram
     if Confirm.ask("Configure Telegram notifications?", default=False):

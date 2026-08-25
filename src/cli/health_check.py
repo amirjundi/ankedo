@@ -287,19 +287,13 @@ def _check_node() -> Check:
                       "Install from https://nodejs.org")
 
 
-def run_doctor(fix: bool = False):
-    """Run all health checks and display results."""
-    console.print()
-    console.print(
-        Panel(
-            Text.from_markup("[bold cyan]🔺 AnkEdo — System Health Check[/]"),
-            border_style="cyan",
-            padding=(0, 2),
-        )
-    )
-    console.print()
+def run_checks() -> list[Check]:
+    """Run every check and return the results, rendering nothing.
 
-    checks = [
+    Separate from run_doctor so callers that are not a terminal — the chat agent,
+    the API — can ask the same questions without a rich table being printed at them.
+    """
+    return [
         _check_python(),
         _check_venv(),
         _check_deps(),
@@ -314,6 +308,21 @@ def run_doctor(fix: bool = False):
         _check_git(),
         _check_node(),
     ]
+
+
+def run_doctor(fix: bool = False):
+    """Run all health checks and display results."""
+    console.print()
+    console.print(
+        Panel(
+            Text.from_markup("[bold cyan]🔺 AnkEdo — System Health Check[/]"),
+            border_style="cyan",
+            padding=(0, 2),
+        )
+    )
+    console.print()
+
+    checks = run_checks()
 
     # Auto-fix if requested
     if fix:

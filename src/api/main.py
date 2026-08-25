@@ -13,6 +13,7 @@ from src.api.admin_router import router as admin_router
 from src.api.evidence_router import router as evidence_router
 from src.api.reports_router import router as reports_router
 from src.api.notifications_router import router as notifications_router
+from src.api.chat_router import router as chat_router
 from src.core.logging_config import configure_logging
 from src.core.database import init_db, get_session_factory
 import asyncio
@@ -62,6 +63,7 @@ app.include_router(admin_router, dependencies=_protected)
 app.include_router(evidence_router, dependencies=_protected)
 app.include_router(reports_router, dependencies=_protected)
 app.include_router(notifications_router, dependencies=_protected)
+app.include_router(chat_router, dependencies=_protected)
 
 @app.on_event("startup")
 async def startup_event():
