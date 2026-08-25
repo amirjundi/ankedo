@@ -31,6 +31,31 @@ from src.models.trope_entry import TropeDictionaryEntry
 log = structlog.get_logger()
 
 
+def _as_bool(value, *, default: bool) -> bool:
+    """Coerce a platform field, treating absent as the caller's default.
+
+    JSON from a Django serializer can arrive as a real bool, or as "true"/"1" from a
+    form-encoded edge. None means the field is not in this platform version, which is
+    the one case the default exists for.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"true", "yes", "1", "y"}
+
+
+def _as_list(value) -> list:
+    """Normalise a JSON list field that may arrive as a comma-separated string."""
+    if not value:
+        return []
+    if isinstance(value, list):
+        return [v for v in value if v not in (None, "")]
+    return [part.strip() for part in str(value).split(",") if part.strip()]
+
+
 @dataclass
 class SyncResult:
     fetched: int = 0
@@ -91,15 +116,25 @@ async def sync_lexicon(
 
         raw_group = (term.get("target_group") or "").strip()
         groups = []
-        if raw_group:
+        # The platform now resolves aliases against a real TargetGroup table and
+        # sends the slug, so prefer it: it knows that الكرد الفيليون is faili-kurd
+        # rather than losing to the الكرد inside it. Fall back to local resolution
+        # for an older platform that does not send the field yet.
+        slug = (term.get("target_group_slug") or "").strip()
+        if not slug and raw_group:
             slug = await resolver.resolve(raw_group)
-            group = await resolver.get(slug) if slug else None
+        if slug:
+            group = await resolver.get(slug)
             if group is None:
-                result.unresolved_groups[raw_group] = (
-                    result.unresolved_groups.get(raw_group, 0) + 1
+                result.unresolved_groups[raw_group or slug] = (
+                    result.unresolved_groups.get(raw_group or slug, 0) + 1
                 )
             else:
                 groups = [group]
+        elif raw_group:
+            result.unresolved_groups[raw_group] = (
+                result.unresolved_groups.get(raw_group, 0) + 1
+            )
 
         row.term = term["term"]
         row.language = term.get("language")
@@ -108,10 +143,17 @@ async def sync_lexicon(
         row.raw_target_group = raw_group or None
         row.severity = term.get("severity_weight")
         row.target_groups = groups
-        # Upstream has no is_explicit flag yet; an unresolvable group means the term
-        # cannot be gated on context, so treat it as explicit rather than lose it.
         row.scope = TermScope.GROUP_SPECIFIC if groups else TermScope.UNIVERSAL
-        row.is_explicit = True
+        # is_explicit now ships from the platform. It used to be forced True here
+        # because upstream had no such field, which made every synced term bypass
+        # the triage drop — safe for recall, wrong for precision, and it meant a
+        # curator marking a term context-dependent had no effect on the agent.
+        #
+        # Absent (older platform), keep the old default: a term whose explicitness
+        # is unknown is better over-escalated than silently dropped.
+        row.is_explicit = _as_bool(term.get("is_explicit"), default=True)
+        row.never_flag_when = _as_list(term.get("never_flag_when"))
+        row.variants = _as_list(term.get("variants"))
         row.enabled = True
         row.source = f"ettok:{platform_id}"
         row.pack_source = "ettok-platform"
@@ -178,12 +220,26 @@ async def sync_tropes(session: AsyncSession, client: EttokClient) -> SyncResult:
         seen.add(trope_id)
 
         raw_group = (trope.get("target_group") or "").strip()
-        slug = trope.get("target_group_slug") or ""
-        group = await resolver.get(slug) if slug else None
-        if group is None and raw_group:
-            resolved = await resolver.resolve(raw_group)
-            group = await resolver.get(resolved) if resolved else None
-        if group is None and raw_group:
+
+        # A trope can name several communities — the devil-worship libel is aimed at
+        # Yazidis and Christians both. The platform now sends target_groups as a
+        # list; the singular fields stay as the fallback for an older one.
+        slugs = [s for s in (trope.get("target_groups") or []) if s]
+        if not slugs:
+            slug = trope.get("target_group_slug") or ""
+            if not slug and raw_group:
+                slug = await resolver.resolve(raw_group)
+            slugs = [slug] if slug else []
+
+        resolved_groups = []
+        for slug in slugs:
+            group = await resolver.get(slug)
+            if group is None:
+                key = raw_group or slug
+                result.unresolved_groups[key] = result.unresolved_groups.get(key, 0) + 1
+            else:
+                resolved_groups.append(group)
+        if not slugs and raw_group:
             result.unresolved_groups[raw_group] = result.unresolved_groups.get(raw_group, 0) + 1
 
         row = existing.get(trope_id)
@@ -194,7 +250,7 @@ async def sync_tropes(session: AsyncSession, client: EttokClient) -> SyncResult:
         else:
             result.updated += 1
 
-        row.target_groups = [group] if group else []
+        row.target_groups = resolved_groups
         row.scope = TermScope.GROUP_SPECIFIC
         row.surface_forms = [
             {"text": form, "register": "unspecified"} for form in trope.get("surface_forms") or []
@@ -210,6 +266,12 @@ async def sync_tropes(session: AsyncSession, client: EttokClient) -> SyncResult:
         row.positive_examples = [{"comment_text": trope["example"]}] if trope.get("example") else []
         row.negative_examples = [
             {"comment_text": example} for example in trope.get("negative_examples") or []
+        ]
+        # Someone quoting the libel in order to reject it. Restored upstream after the
+        # workbook showed curators were already collecting these.
+        row.counter_speech_examples = [
+            {"comment_text": example}
+            for example in trope.get("counter_speech_examples") or []
         ]
         row.enabled = True
         row.pack_source = "ettok-platform"

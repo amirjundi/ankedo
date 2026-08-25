@@ -10,7 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.reviewer_decision import ReviewerDecision
 from src.learning.artifact_generator import ArtifactGenerator
+from src.ettok.outbox import enqueue
 from src.learning.eval_gate import EvalGate
+from src.models.outbox import OutboxKind
 
 log = structlog.get_logger()
 
@@ -76,14 +78,38 @@ class LearningLoopWorker:
         # can, and the lexicon is human-authored by design: curators fill the workbook,
         # it imports to the platform, and the agent pulls it back down.
         #
-        # ponytail: held, not submitted. The platform's lexicon-gaps endpoint is being
-        # built in the other repo; until it exists there is nowhere to send these, and
-        # holding them is the behaviour that cannot corrupt the dictionary. Wire the
-        # submission here when the endpoint lands.
+        # So it goes to the platform as a proposal. Through the outbox rather than a
+        # direct call: a dropped connection here must not lose the artifact, and the
+        # drain already handles retries and the auth-failure stop.
+        gaps = [self._as_gap(entry, result) for entry in proposed_lexicon]
+        if gaps:
+            await enqueue(self.session, OutboxKind.LEXICON_GAP, {"gaps": gaps})
+            await self.session.commit()
+
         log.info(
-            "Proposal passed the eval gate — holding for curator review",
+            "Proposal queued for curator review",
             summary=result.summary,
-            lexicon=len(proposed_lexicon),
-            tropes=len(proposed_tropes),
-            note="not applied; awaiting the platform lexicon-gaps endpoint",
+            gaps=len(gaps),
+            tropes_held=len(proposed_tropes),
         )
+
+    @staticmethod
+    def _as_gap(entry, result) -> dict:
+        """Shape one proposed term for POST lexicon-gaps/.
+
+        gate_effect carries the measured before/after. A curator seeing "lifts recall
+        0.71 to 0.74" is deciding something different from a curator seeing a bare
+        suggestion, and the numbers are the only part of this the agent is actually
+        qualified to contribute.
+        """
+        return {
+            "suggested_term": entry.term,
+            "language": entry.language,
+            "suggested_target_group": entry.raw_target_group,
+            "suggested_category": entry.category,
+            "rationale": entry.source or "generated from a reviewer decision",
+            "gate_effect": {
+                "recall_before": round(result.baseline.overall.recall, 3),
+                "recall_after": round(result.proposed.overall.recall, 3),
+            },
+        }

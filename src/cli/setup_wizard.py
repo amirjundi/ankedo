@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import secrets
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import click
@@ -69,17 +70,44 @@ PROVIDERS = {
     },
 }
 
-# Shown when the operator picks the OpenAI-compatible backend, because the base URL
-# is the one field nobody remembers.
-COMPATIBLE_ENDPOINTS = [
-    ("OpenAI", ""),
-    ("OpenRouter", "https://openrouter.ai/api/v1"),
-    ("Groq", "https://api.groq.com/openai/v1"),
-    ("Together", "https://api.together.xyz/v1"),
-    ("DeepSeek", "https://api.deepseek.com/v1"),
-    ("Ollama (local)", "http://localhost:11434/v1"),
-    ("LM Studio (local)", "http://localhost:1234/v1"),
+@dataclass(frozen=True)
+class ProviderChoice:
+    """One row in the provider menu.
+
+    The operator picks a service, not an implementation. Which backend serves it —
+    google-genai or the OpenAI-compatible one — and what base URL that implies are
+    ours to work out; asking someone to choose "OpenAI-compatible" and then pick
+    OpenRouter from a second menu makes them model our code to answer a question
+    about their account.
+    """
+
+    label: str
+    backend: str
+    base_url: str = ""
+    note: str = ""
+    prompts_for_url: bool = False
+
+
+# The list is a shortcut, not a limit: the last row reaches anything speaking
+# /v1/chat/completions, so a new service never requires editing this file.
+PROVIDER_CHOICES = [
+    ProviderChoice("Google Gemini", "gemini", note="recommended — see below"),
+    ProviderChoice("OpenAI", "openai"),
+    ProviderChoice("OpenRouter", "openai", "https://openrouter.ai/api/v1",
+                   "many models, incl. free tiers"),
+    ProviderChoice("Groq", "openai", "https://api.groq.com/openai/v1", "fast, free tier"),
+    ProviderChoice("Together", "openai", "https://api.together.xyz/v1"),
+    ProviderChoice("DeepSeek", "openai", "https://api.deepseek.com/v1"),
+    ProviderChoice("Ollama", "openai", "http://localhost:11434/v1", "local, no key needed"),
+    ProviderChoice("LM Studio", "openai", "http://localhost:1234/v1", "local, no key needed"),
+    ProviderChoice("Other / custom", "openai", note="any OpenAI-compatible URL",
+                   prompts_for_url=True),
 ]
+
+# A local runtime or a free proxy often wants no credential, but the OpenAI SDK
+# refuses to construct without one. Send a placeholder rather than making the
+# operator invent a fake key or leaving setup in a state that cannot start.
+NO_KEY_PLACEHOLDER = "not-needed"
 
 # .env keys for each model role, in the order the wizard shows them.
 MODEL_ENV_KEYS = {
@@ -423,40 +451,42 @@ def run_setup(non_interactive: bool = False, reconfigure: bool = False):
     # ── Step 1: AI Provider ──────────────────────────────────────────────
     _step_header(1, total_steps, "AI Provider")
 
-    provider_ids = list(PROVIDERS)
     console.print("Which provider should the classification committee use?\n")
-    # Each print parses its own markup, so a tag opened in one call and closed in the
-    # next raises MarkupError. Keep every tag opened and closed in the same string.
-    console.print("  [cyan]1[/] Google Gemini      [dim]— recommended: reproducible,[/]")
-    console.print("                        [dim]and safety filters can be turned off[/]")
-    console.print("  [cyan]2[/] OpenAI-compatible  [dim]— OpenAI, OpenRouter, Groq,[/]")
-    console.print("                        [dim]Together, DeepSeek, Ollama, LM Studio[/]\n")
+
+    for index, entry in enumerate(PROVIDER_CHOICES, 1):
+        note = f"  [dim]{entry.note}[/]" if entry.note else ""
+        console.print(f"  [cyan]{index:>2}[/] {entry.label:<20}{note}")
+
     console.print(
-        "[dim]This tool has to read hate speech to classify it. Gemini lets the client\n"
-        "disable the filters that would block exactly those items; OpenAI-compatible\n"
-        "endpoints do not, so expect occasional refusals on the worst content.[/]\n"
+        "\n[dim]This tool has to read hate speech in order to classify it. Gemini is\n"
+        "the only backend where the client can switch those filters off, and the only\n"
+        "one that honours a fixed seed, so results stay reproducible. Anything else\n"
+        "may refuse the worst content.[/]\n"
     )
 
-    choice = Prompt.ask("Select provider", choices=["1", "2"], default="1")
-    provider_id = provider_ids[int(choice) - 1]
+    pick = Prompt.ask(
+        "Select provider",
+        choices=[str(i) for i in range(1, len(PROVIDER_CHOICES) + 1)],
+        default="1",
+    )
+    entry = PROVIDER_CHOICES[int(pick) - 1]
+
+    provider_id = entry.backend
     provider = PROVIDERS[provider_id]
     config["LLM_PROVIDER"] = provider_id
-    console.print(f"\n[green]✓ Selected: {provider['name']}[/]")
+    console.print(f"\n[green]✓ Selected: {entry.label}[/]")
 
-    if provider["asks_base_url"]:
-        console.print("\n[bold]Endpoint[/]")
-        for i, (label, url) in enumerate(COMPATIBLE_ENDPOINTS, 1):
-            console.print(f"  [cyan]{i}[/] {label:<20}[dim]{url or 'https://api.openai.com/v1'}[/]")
-        console.print()
-        pick = Prompt.ask(
-            "  Choose",
-            choices=[str(i) for i in range(1, len(COMPATIBLE_ENDPOINTS) + 1)],
-            default="1",
+    base_url = ""
+    if entry.prompts_for_url:
+        console.print(
+            "\n[dim]Any endpoint serving /v1/chat/completions — a self-hosted proxy,\n"
+            "a gateway, or a free-model service. Include the /v1.[/]"
         )
-        base_url = COMPATIBLE_ENDPOINTS[int(pick) - 1][1]
-        if base_url:
-            base_url = Prompt.ask("  Base URL", default=base_url)
-            config["OPENAI_BASE_URL"] = base_url
+        base_url = Prompt.ask("  Base URL").strip()
+    elif entry.base_url:
+        base_url = Prompt.ask("  Base URL", default=entry.base_url).strip()
+    if base_url:
+        config["OPENAI_BASE_URL"] = base_url
 
     # ── Step 2: API Key ──────────────────────────────────────────────────
     _step_header(2, total_steps, "API Key")
@@ -470,10 +500,18 @@ def run_setup(non_interactive: bool = False, reconfigure: bool = False):
             api_key = existing_key
         else:
             api_key = Prompt.ask(f"Enter your {provider['name']} API key")
+    elif provider_id == "openai" and config.get("OPENAI_BASE_URL"):
+        # A local model or an open proxy has no key to give.
+        console.print("[dim]Leave blank if this endpoint does not need a key.[/]")
+        api_key = Prompt.ask("Enter the API key", default="").strip()
     else:
         api_key = Prompt.ask(
             f"Enter your {provider['name']} API key (starts with {provider['key_prefix']})"
         )
+
+    if not api_key and config.get("OPENAI_BASE_URL"):
+        api_key = NO_KEY_PLACEHOLDER
+        console.print(f"[dim]No key given — using '{NO_KEY_PLACEHOLDER}'.[/]")
 
     # Validate
     console.print("[dim]Validating API key...[/]", end=" ")

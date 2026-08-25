@@ -64,13 +64,12 @@ def test_the_gemini_path_completes_and_writes_a_key(wizard):
     assert config["SECRET_KEY"], "a secret key must be generated"
 
 
-def test_the_openai_path_writes_the_endpoint_and_switches_models(wizard):
+def test_a_preset_endpoint_writes_its_url_and_switches_models(wizard):
     config = wizard(
         prompts=[
-            "2",                      # OpenAI-compatible
-            "6",                      # Ollama
-            "http://localhost:11434/v1",
-            "sk-testtesttesttesttest",
+            "7",                            # Ollama, one choice — no second menu
+            "http://localhost:11434/v1",    # offered as the default
+            "",                             # local model needs no key
         ],
         confirms=[False, False, False, False, True],
     )
@@ -79,6 +78,38 @@ def test_the_openai_path_writes_the_endpoint_and_switches_models(wizard):
     assert config["OPENAI_BASE_URL"] == "http://localhost:11434/v1"
     # Switching provider must not leave gemini model ids behind.
     assert not config["SPECIALIST_MODEL"].startswith("gemini")
+
+
+def test_plain_openai_does_not_ask_for_a_url(wizard):
+    config = wizard(
+        prompts=["2", "sk-testtesttesttesttest"],
+        confirms=[False, False, False, False, True],
+    )
+
+    assert config["LLM_PROVIDER"] == "openai"
+    assert config["OPENAI_API_KEY"] == "sk-testtesttesttesttest"
+    assert not config.get("OPENAI_BASE_URL"), "api.openai.com is the SDK default"
+
+
+def test_a_custom_endpoint_can_be_typed_in(wizard):
+    """Any OpenAI-compatible proxy, without editing the provider list."""
+    config = wizard(
+        prompts=["9", "https://proxy.example.dev/v1", "free-tier-key"],
+        confirms=[False, False, False, False, True],
+    )
+
+    assert config["LLM_PROVIDER"] == "openai"
+    assert config["OPENAI_BASE_URL"] == "https://proxy.example.dev/v1"
+
+
+def test_a_keyless_endpoint_gets_a_placeholder(wizard):
+    """The OpenAI SDK refuses to construct without a key; a local model has none."""
+    config = wizard(
+        prompts=["9", "http://127.0.0.1:8080/v1", ""],
+        confirms=[False, False, False, False, True],
+    )
+
+    assert config["OPENAI_API_KEY"] == wiz.NO_KEY_PLACEHOLDER
 
 
 def test_declining_to_save_writes_nothing(wizard):
