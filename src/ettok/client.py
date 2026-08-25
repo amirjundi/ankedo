@@ -37,6 +37,14 @@ class EttokUnavailable(EttokError):
     """Network failure or 5xx that survived the retries."""
 
 
+def _is_loopback(url: str) -> bool:
+    """Allow http:// only against localhost, for development against a local server."""
+    from urllib.parse import urlparse
+
+    host = (urlparse(url).hostname or "").lower()
+    return host in ("localhost", "127.0.0.1", "::1")
+
+
 class EttokClient:
     """Async client for `/api/hermes/`.
 
@@ -63,6 +71,19 @@ class EttokClient:
                 "admin under 'Agent keys' with the hate_speech_scan scope)"
             )
 
+        # HTTPS is not optional. This carries evidence about people who are already
+        # targets of violence, plus a bearer token that grants submission rights, over
+        # residential WiFi in Iraq. A plaintext URL exposes both to anyone on the path,
+        # and the contract says HTTPS only — so a downgrade is refused rather than
+        # warned about, since a warning in a log nobody reads is not a control.
+        if not self.base_url.startswith("https://"):
+            if not _is_loopback(self.base_url):
+                raise EttokError(
+                    f"refusing to connect over plaintext: {self.base_url!r}. "
+                    "Use https:// — the contract is HTTPS only, and this carries "
+                    "evidence about vulnerable people."
+                )
+
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
             timeout=settings.ettok_timeout_seconds,
@@ -85,8 +106,20 @@ class EttokClient:
 
     # ------------------------------------------------------------------ core
 
-    async def _request(self, method: str, path: str, **kwargs: Any) -> dict:
+    async def _request(
+        self, method: str, path: str, *, request_id: str | None = None, **kwargs: Any
+    ) -> dict:
+        """Send, retrying transient failures.
+
+        `request_id` makes a write idempotent. The retry loop cannot tell "the server
+        never saw it" from "the server processed it and the response was lost" — on a
+        residential connection the second happens — so without a stable id a retry
+        creates duplicate reports about the same person.
+        """
         last_error: Exception | None = None
+        if request_id:
+            kwargs.setdefault("headers", {})
+            kwargs["headers"]["Idempotency-Key"] = request_id
 
         for attempt in range(self.max_retries + 1):
             try:
@@ -196,15 +229,28 @@ class EttokClient:
         """Monitoring accounts to browse as."""
         return await self._request("GET", "accounts/")
 
-    async def post_flagged_items(self, items: list[dict]) -> dict:
+    async def post_flagged_items(self, items: list[dict], *, request_id: str | None = None) -> dict:
         """Submit suspicious content.
 
-        The contract is explicit that this is a prefilter, not a verdict: send
-        anything a term or heuristic touched and let the platform's confirmation pass
-        decide. Confirmation is asynchronous with no callback — results surface as
-        HateSpeechReport rows in the dashboard.
+        Carries the agent's verdict (§7), not merely a candidate. Confirmation on the
+        platform is asynchronous with no callback — results surface as
+        HateSpeechReport rows for human review.
+
+        `request_id` is sent as an Idempotency-Key so a retry after a lost response
+        cannot create a second report about the same person.
         """
-        return await self._request("POST", "flagged-items/", json={"items": items})
+        return await self._request(
+            "POST", "flagged-items/", json={"items": items}, request_id=request_id
+        )
+
+    async def post_lexicon_gaps(self, gaps: list[dict]) -> dict:
+        """Propose terms the agent saw but the dictionary does not have (§3).
+
+        The mechanism by which the agent contributes without authority to rewrite its
+        own rules: it proposes, a curator accepts. Blocked upstream until
+        LexiconGap.report becomes nullable — a proposal has no report to hang off.
+        """
+        return await self._request("POST", "lexicon-gaps/", json={"gaps": gaps})
 
     async def post_scan_log(self, payload: dict) -> dict:
         """Submit run statistics."""

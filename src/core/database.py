@@ -23,6 +23,7 @@ from src.models.follow_state import FollowState  # noqa
 from src.models.gold_eval_entry import GoldEvalEntry  # noqa
 from src.models.lexicon_entry import LexiconEntry  # noqa
 from src.models.llm_call import LLMCall  # noqa
+from src.models.outbox import OutboxItem  # noqa
 from src.models.post import Post  # noqa
 from src.models.queue_item import QueueItem  # noqa
 from src.models.reviewer_decision import ReviewerDecision  # noqa
