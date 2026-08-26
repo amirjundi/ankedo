@@ -48,6 +48,21 @@ class AgentSettings(BaseSettings):
     # Unset means api.openai.com. Point it at any /v1 that speaks chat completions.
     openai_base_url: Optional[str] = Field(default=None)
 
+    # Free and self-hosted models are slow and frequently rate-limited; the SDK's
+    # default timeout is tuned for a paid endpoint. A run against a free proxy timed
+    # out mid-classification with the model still working.
+    llm_timeout_seconds: float = Field(default=180.0, gt=0)
+    llm_max_retries: int = Field(default=3, ge=0)
+
+    # Tried in order when the configured model is rate-limited or unavailable. On a
+    # free tier a 429 is routine, not exceptional, and failing the item because one
+    # model is busy loses work the agent could have done with another.
+    fallback_models: str = Field(default="")
+
+    @property
+    def fallback_model_list(self) -> list[str]:
+        return [m.strip() for m in self.fallback_models.split(",") if m.strip()]
+
     @field_validator("llm_provider")
     @classmethod
     def known_provider(cls, v: str) -> str:

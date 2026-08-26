@@ -55,7 +55,7 @@ def backend(monkeypatch):
         completions = FakeCompletions(responses, reject_json_schema)
         client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
         monkeypatch.setattr(
-            "openai.AsyncOpenAI", lambda api_key, base_url=None: client, raising=False
+            "openai.AsyncOpenAI", lambda **kwargs: client, raising=False
         )
         return _OpenAIBackend("sk-test", None), completions
 
@@ -228,7 +228,7 @@ def test_gemini_provider_without_a_key_points_at_setup():
 def test_openai_provider_selects_the_openai_backend(monkeypatch):
     monkeypatch.setattr(
         "openai.AsyncOpenAI",
-        lambda api_key, base_url=None: SimpleNamespace(base_url=base_url),
+        lambda **kwargs: SimpleNamespace(base_url=kwargs.get("base_url")),
         raising=False,
     )
     be = _build_backend(

@@ -146,7 +146,16 @@ class _OpenAIBackend:
     def __init__(self, api_key: str, base_url: str | None):
         from openai import AsyncOpenAI
 
-        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        settings = get_settings()
+        # The SDK's defaults are tuned for a paid endpoint. A free model can take a
+        # minute to answer, and a run timed out mid-classification while the model
+        # was still working.
+        self._client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=settings.llm_timeout_seconds,
+            max_retries=settings.llm_max_retries,
+        )
         self._strict_unsupported: set[str] = set()
 
     @staticmethod
@@ -321,6 +330,21 @@ class _OpenAIBackend:
         return parsed, spent["prompt_tokens"], spent["output_tokens"]
 
 
+
+# Failures that say "this model, right now" rather than "this request is wrong".
+# On a free tier these are routine: four of five models on the operator's proxy
+# answer 429 at any given moment, and the one that works is intermittent.
+_TRANSIENT = (
+    "rate limit", "rate_limit", "429", "unavailable", "overloaded", "capacity",
+    "timed out", "timeout", "temporarily", "503", "502", "504", "connection",
+)
+
+
+def _is_transient(error: str) -> bool:
+    low = error.lower()
+    return any(word in low for word in _TRANSIENT)
+
+
 def _extract_json(text: str) -> str:
     """Pull the JSON object out of a reply that is not only JSON.
 
@@ -413,21 +437,54 @@ class LLMClient:
         """
         await check_budget(self.session, case_id=case_id)
 
+        # The configured model first, then anything the operator listed as a
+        # fallback. On a free tier a 429 is routine — four of five models on the
+        # deployment proxy answer that way at any moment — and failing the item
+        # because one model is busy discards work another could have done.
+        candidates = [model] + [
+            m for m in self.settings.fallback_model_list if m != model
+        ]
+
         started = time.monotonic()
-        try:
-            parsed, prompt_tokens, output_tokens = await self._backend.complete(
-                model=model,
-                prompt=prompt,
-                schema=schema,
-                system_instruction=system_instruction,
-                images=images,
-            )
-        except Exception as exc:  # SDKs raise a wide range of transport/API errors
+        result: tuple[T, int, int] | None = None
+        failure: Exception | None = None
+        used = model
+
+        for index, candidate in enumerate(candidates):
+            try:
+                result = await self._backend.complete(
+                    model=candidate,
+                    prompt=prompt,
+                    schema=schema,
+                    system_instruction=system_instruction,
+                    images=images,
+                )
+                used = candidate
+                if index:
+                    log.info(
+                        "Fell back to another model",
+                        purpose=purpose, wanted=model, used=candidate,
+                    )
+                break
+            except Exception as exc:
+                failure, used = exc, candidate
+                # A malformed prompt or an unparseable schema fails identically on
+                # every model; only "this model, right now" is worth moving past.
+                if not _is_transient(str(exc)) or index == len(candidates) - 1:
+                    break
+                log.info(
+                    "Model unavailable, trying the next",
+                    purpose=purpose, model=candidate,
+                    error=str(exc).splitlines()[0][:120],
+                )
+
+        if result is None:
+            exc = failure or LLMError("no model produced a response")
             # A refused or unparseable response still burned its prompt tokens, so the
             # ledger takes whatever the backend managed to read off the response.
             await record_call(
                 self.session,
-                model=model,
+                model=used,
                 purpose=purpose,
                 prompt_version=prompt_version,
                 prompt_tokens=getattr(exc, "prompt_tokens", 0),
@@ -438,9 +495,13 @@ class LLMClient:
                 succeeded=False,
                 error=str(exc)[:2000],
             )
+            tried = f" (tried {', '.join(candidates)})" if len(candidates) > 1 else ""
             if isinstance(exc, LLMError):
-                raise LLMError(f"{purpose} on {model}: {exc}") from exc
-            raise LLMError(f"{purpose} call to {model} failed: {exc}") from exc
+                raise LLMError(f"{purpose} on {used}: {exc}{tried}") from exc
+            raise LLMError(f"{purpose} call to {used} failed: {exc}{tried}") from exc
+
+        parsed, prompt_tokens, output_tokens = result
+        model = used
 
         latency_ms = int((time.monotonic() - started) * 1000)
         await record_call(
