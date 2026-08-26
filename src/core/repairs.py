@@ -73,15 +73,23 @@ REPAIRS: dict[str, Repair] = {
     for r in [
         Repair(
             name="browser",
-            description="Install a browser Playwright can drive",
+            description="Install the browser the collector launches",
             applies_to="Browser Engine",
-            # Ordered by preference. The first is the normal case; the second covers a
-            # Playwright too old to know this distro; the third is handled in code
-            # because it writes config rather than running a command.
+            # Camoufox first, because that is what CamoufoxWorker actually starts — it
+            # is a Firefox fork with its own download, not a Playwright browser. An
+            # earlier version of this installed chromium, which succeeded and left the
+            # check failing on a missing firefox: the repair fixed a browser nothing
+            # launches.
+            #
+            # Then Playwright's firefox as a second source, then an upgrade and retry
+            # for a Playwright too old to know this distro. The final fallback — using
+            # a browser already on the machine — writes config rather than running a
+            # command, so it lives in _adopt_system_browser.
             commands=(
-                (sys.executable, "-m", "playwright", "install", "chromium"),
-                (sys.executable, "-m", "pip", "install", "-U", "playwright"),
-                (sys.executable, "-m", "playwright", "install", "chromium"),
+                (sys.executable, "-m", "camoufox", "fetch"),
+                (sys.executable, "-m", "playwright", "install", "firefox"),
+                (sys.executable, "-m", "pip", "install", "-U", "camoufox", "playwright"),
+                (sys.executable, "-m", "camoufox", "fetch"),
             ),
         ),
         Repair(

@@ -172,19 +172,37 @@ step "Installing dependencies..."
 info "Upgrading pip..."
 python -m pip install --upgrade pip --quiet 2>&1
 
-info "Installing AnkEdo and all dependencies (this may take 2-3 minutes)..."
-python -m pip install -e . --quiet 2>&1
-if [ $? -eq 0 ]; then
-    ok "All dependencies installed"
+# Re-running the installer should not spend three minutes reinstalling what is
+# already there. `pip check` verifies the installed set is complete and consistent,
+# and importing the entry point proves this project itself is installed — together
+# that is the question "do I need to do anything?".
+NEEDS_DEPS=1
+if python -c "import src.cli.__main__" 2>/dev/null && python -m pip check >/dev/null 2>&1; then
+    NEEDS_DEPS=0
+fi
+
+if [ "$NEEDS_DEPS" = "0" ] && [ "${FORCE_DEPS:-}" != "1" ]; then
+    ok "Dependencies already satisfied — skipping"
+    info "Reinstall anyway with: FORCE_DEPS=1 ./install.sh"
 else
-    fail "Dependency installation failed"
-    info "Try manually: pip install -e ."
-    exit 1
+    info "Installing AnkEdo and all dependencies (this may take 2-3 minutes)..."
+    if python -m pip install -e . --quiet 2>&1; then
+        ok "All dependencies installed"
+    else
+        fail "Dependency installation failed"
+        info "Try manually: pip install -e ."
+        exit 1
+    fi
 fi
 
 # ── Step 4: Install Playwright Browsers ───────────────────────────────────
-step "Installing browser engine (Playwright)..."
-if python -m playwright install chromium 2>/dev/null; then
+step "Checking browser engine (Playwright)..."
+# `playwright install` is a no-op when the browser is present, but it still contacts
+# the download registry. Ask the doctor first — it launches a browser, which is the
+# only thing that actually answers whether one works.
+if python -m src.cli doctor 2>/dev/null | grep -q "Browser launches"; then
+    ok "Browser already installed"
+elif python -m playwright install chromium 2>/dev/null; then
     ok "Chromium browser installed"
 else
     # Playwright refuses to download for a distro its build registry does not know

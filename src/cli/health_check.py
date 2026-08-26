@@ -224,6 +224,20 @@ def _check_database() -> Check:
                       "Run: ankedo db init")
 
 
+async def _launch_probe(options: dict) -> None:
+    """Start and immediately stop the browser the collector uses."""
+    from camoufox.async_api import AsyncCamoufox
+    from playwright.async_api import async_playwright
+
+    playwright = await async_playwright().start()
+    try:
+        # AsyncCamoufox is an async context manager, not an awaitable.
+        async with AsyncCamoufox(playwright=playwright, **options):
+            pass
+    finally:
+        await playwright.stop()
+
+
 def _check_playwright() -> Check:
     """Actually launch a browser, and fail — not warn — when it will not start.
 
@@ -234,12 +248,6 @@ def _check_playwright() -> Check:
 
     A launch is slower than a stat. It is the only thing that answers the question.
     """
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        return Check("Browser Engine", "fail", "Playwright not installed",
-                     "Run: pip install -e .")
-
     settings = get_settings()
     options: dict = {"headless": True}
     if settings.browser_executable_path:
@@ -248,10 +256,10 @@ def _check_playwright() -> Check:
         options["channel"] = settings.browser_channel
 
     try:
-        with sync_playwright() as pw:
-            browser = pw.firefox.launch(**options) if not options.get("channel") \
-                else pw.chromium.launch(**options)
-            browser.close()
+        # Launch what the collector launches. Camoufox is a Firefox fork with its own
+        # browser download, so testing Playwright's chromium would pass while
+        # collection still had nothing to start.
+        asyncio.run(_launch_probe(options))
     except Exception as exc:
         detail = str(exc).strip().splitlines()[0][:160] if str(exc).strip() else type(exc).__name__
         using = settings.browser_executable_path or settings.browser_channel

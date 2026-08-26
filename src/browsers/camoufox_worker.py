@@ -39,6 +39,7 @@ class CamoufoxWorker:
         self._context: BrowserContext | None = None
         self._page: Page | None = None
         self._playwright = None
+        self._camoufox = None
 
     async def start(self) -> None:
         """Launch the Camoufox browser and load the persistent session."""
@@ -65,7 +66,11 @@ class CamoufoxWorker:
 
         try:
             self._playwright = await async_playwright().start()
-            self._browser = await AsyncCamoufox(playwright=self._playwright, **options)
+            # AsyncCamoufox is an async context manager, not an awaitable — `await
+            # AsyncCamoufox(...)` raises "object AsyncCamoufox can't be used in an
+            # 'await' expression". The manager is held so stop() can exit it.
+            self._camoufox = AsyncCamoufox(playwright=self._playwright, **options)
+            self._browser = await self._camoufox.__aenter__()
             self._context = (
                 self._browser.contexts[0]
                 if self._browser.contexts
@@ -82,9 +87,12 @@ class CamoufoxWorker:
 
     async def _abandon(self) -> None:
         """Tear down whatever managed to start, ignoring further failures."""
+        async def _exit_camoufox():
+            await self._camoufox.__aexit__(None, None, None)
+
         for closer in (
             getattr(self._context, "close", None),
-            getattr(self._browser, "close", None),
+            _exit_camoufox if self._camoufox is not None else None,
             getattr(self._playwright, "stop", None),
         ):
             if closer is None:
@@ -93,17 +101,22 @@ class CamoufoxWorker:
                 await closer()
             except Exception:  # noqa: BLE001 — cleanup must not mask the real error
                 pass
-        self._context = self._browser = self._page = self._playwright = None
+        self._camoufox = self._context = self._browser = self._page = self._playwright = None
 
     async def stop(self) -> None:
         """Close the browser safely."""
         log.info("Stopping Camoufox worker", account_id=self.account_id)
         if self._context:
             await self._context.close()
-        if self._browser:
+        # Exit the context manager rather than closing the browser directly, so
+        # Camoufox tears down its own temporary profile and virtual display.
+        if self._camoufox is not None:
+            await self._camoufox.__aexit__(None, None, None)
+        elif self._browser:
             await self._browser.close()
         if self._playwright:
             await self._playwright.stop()
+        self._camoufox = self._browser = self._context = self._page = None
 
     async def pacing_delay(self) -> None:
         """Human-like randomized pacing (Gaussian-distributed delay)."""

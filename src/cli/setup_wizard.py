@@ -257,6 +257,35 @@ def _mask_key(key: str) -> str:
     return key[:4] + "•" * (len(key) - 8) + key[-4:]
 
 
+def _parse_value(raw: str) -> str:
+    """The value from the right-hand side of a KEY=VALUE line, without its comment.
+
+    `.env.example` documents most keys with a trailing comment:
+
+        TELEGRAM_BOT_TOKEN=                     # From @BotFather
+        TRIAGE_MODEL=gemini-3.5-flash-lite      # Fast, cheap
+
+    Taking everything after the `=` made those comments the values. The wizard then
+    reported Telegram as configured because "# From @BotFather" is a non-empty string,
+    wrote it into .env, and pydantic loaded it as the bot token. The same bug corrupted
+    every model id, LOG_LEVEL, MCP_SERVERS and the proxy list.
+
+    An inline comment needs whitespace before the `#`, so a value that legitimately
+    contains one — a password, a URL fragment — survives. A quoted value is taken
+    whole, which is the escape hatch for a value starting with `#`.
+    """
+    raw = raw.strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+        return raw[1:-1]
+
+    cut = len(raw)
+    for index, char in enumerate(raw):
+        if char == "#" and (index == 0 or raw[index - 1] in " \t"):
+            cut = index
+            break
+    return raw[:cut].strip()
+
+
 def _load_existing_env() -> dict[str, str]:
     """Parse existing .env file into a dict."""
     config = {}
@@ -267,7 +296,7 @@ def _load_existing_env() -> dict[str, str]:
                 continue
             if "=" in line:
                 key, _, value = line.partition("=")
-                config[key.strip()] = value.strip()
+                config[key.strip()] = _parse_value(value)
     return config
 
 
@@ -289,7 +318,7 @@ def _write_env(config: dict[str, str]):
                 lines.append(line)
             elif "=" in stripped:
                 key = stripped.split("=", 1)[0].strip()
-                template = stripped.split("=", 1)[1].strip()
+                template = _parse_value(stripped.split("=", 1)[1])
                 # "AIza..." / "sk-..." are illustrations, not values. Copied through,
                 # they read as a configured key and fail only on the first API call.
                 if template.endswith("..."):

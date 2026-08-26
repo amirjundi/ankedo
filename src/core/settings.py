@@ -6,6 +6,7 @@ No magic numbers elsewhere in the codebase.
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Optional
 
 from pydantic import Field, field_validator
@@ -13,8 +14,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class AgentSettings(BaseSettings):
+    # An absolute path, not ".env". Relative, it is looked up from the process's cwd,
+    # so `ankedo start` run from a home directory loaded no configuration at all —
+    # every setting fell back to its default, including no API key and no admin token,
+    # while `ankedo doctor` reported the file present because it resolves against the
+    # project root. Silent, and only possible once `ankedo` went onto PATH.
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(Path(__file__).resolve().parent.parent.parent / ".env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -293,6 +299,35 @@ class AgentSettings(BaseSettings):
     # Proxy
     # -----------------------------------------------------------------------
     residential_proxy_list: str = Field(default="", description="Comma-separated proxy URLs")
+
+    @field_validator("database_url")
+    @classmethod
+    def absolute_sqlite_path(cls, v: str) -> str:
+        """Anchor a relative sqlite path to the project, not the current directory.
+
+        The default is `sqlite+aiosqlite:///./data/ankedo.db`, which resolves against
+        the process's cwd. That was invisible while the agent was only ever started
+        from a checkout — then `ankedo` went onto PATH, someone ran it from their home
+        directory, and startup died with "unable to open database file" while
+        `ankedo doctor` reported the database present, because the doctor resolves the
+        same path against the project root.
+
+        Only relative paths are rewritten; an absolute path or a non-sqlite URL is left
+        exactly as configured.
+        """
+        prefix = next((p for p in ("sqlite+aiosqlite:///", "sqlite:///") if v.startswith(p)), None)
+        if prefix is None:
+            return v
+
+        path = v[len(prefix):]
+        # A fourth slash means an absolute POSIX path; a drive letter means Windows.
+        if path.startswith("/") or (len(path) > 1 and path[1] == ":"):
+            return v
+
+        root = Path(__file__).resolve().parent.parent.parent
+        resolved = (root / path).resolve()
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        return f"{prefix}{resolved.as_posix()}"
 
     @field_validator("borderline_high")
     @classmethod

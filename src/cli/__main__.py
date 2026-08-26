@@ -114,6 +114,27 @@ def start_cmd(host: str | None, port: int | None, no_browser: bool):
     api_host = host or settings.api_host
     api_port = port or settings.api_port
 
+    # 8000 is a popular port. Find out before announcing a dashboard and opening a
+    # browser at it — otherwise the operator is sent to whatever else is listening,
+    # and uvicorn's bind error scrolls past under a panel that said it was running.
+    # Connect rather than bind: on Windows SO_REUSEADDR lets a probe bind a port that
+    # another process is already serving, so a bind test quietly passes and uvicorn
+    # fails later — under a panel that has already said the dashboard is up.
+    import socket
+
+    probe_host = "127.0.0.1" if api_host in ("0.0.0.0", "") else api_host
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.settimeout(0.5)
+        if probe.connect_ex((probe_host, api_port)) == 0:
+            console.print(f"\n[red]✗ Port {api_port} is already serving something.[/]")
+            console.print(
+                f"\n[dim]Open http://{probe_host}:{api_port} to see what. If it is an old\n"
+                "AnkEdo, stop it first. Otherwise pick another port:[/]\n"
+                f"  [cyan]ankedo start --port {api_port + 1}[/]        [dim]just this run[/]\n"
+                f"  [cyan]ankedo configure set API_PORT={api_port + 1}[/]  [dim]permanently[/]\n"
+            )
+            sys.exit(1)
+
     console.print()
     console.print(
         Panel(
@@ -132,6 +153,11 @@ def start_cmd(host: str | None, port: int | None, no_browser: bool):
     # Ensure data directories exist
     for d in ["data", "evidence", "logs", "screenshots"]:
         (PROJECT_ROOT / d).mkdir(exist_ok=True)
+
+    # Several settings are relative paths documented as "relative to the project" —
+    # evidence_dir, log_dir, the pack directory, and Camoufox's ./sessions profiles.
+    # Running from elsewhere would scatter them through the operator's home directory.
+    os.chdir(PROJECT_ROOT)
 
     # Initialize database if needed
     db_path = PROJECT_ROOT / "data" / "ankedo.db"
@@ -156,13 +182,21 @@ def start_cmd(host: str | None, port: int | None, no_browser: bool):
 
     # Start uvicorn
     import uvicorn
-    uvicorn.run(
-        "src.api.main:app",
-        host=api_host,
-        port=api_port,
-        reload=False,
-        log_level="info",
-    )
+    try:
+        uvicorn.run(
+            "src.api.main:app",
+            host=api_host,
+            port=api_port,
+            reload=False,
+            log_level="info",
+        )
+    except KeyboardInterrupt:
+        console.print("\n[dim]Stopped.[/]")
+    except OSError as exc:
+        # Belt and braces: the pre-flight check above catches the common case, but the
+        # port can be taken in the moment between checking and binding.
+        console.print(f"\n[red]✗ Could not start the server: {exc}[/]")
+        sys.exit(1)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

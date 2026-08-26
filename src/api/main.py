@@ -3,9 +3,14 @@ FastAPI entry point for the local admin and reviewer dashboard.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import structlog
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src.api.review_endpoints import router as review_router
 from src.api.accounts_router import router as accounts_router
@@ -105,3 +110,69 @@ async def startup_event():
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+
+# ── The dashboard ────────────────────────────────────────────────────────────
+# `ankedo start` has always printed "Dashboard: http://host:port" and opened a
+# browser there, and nothing was ever served at "/" — the React app lives in
+# frontend/dist and was never mounted. The operator got a 404 from a URL the tool
+# had just told them was the dashboard.
+#
+# Mounted last so it cannot shadow /api/*, /docs or /health.
+
+_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+
+
+# Paths that belong to the API. A request under one of these must reach the router
+# even when it does not match a route: /api/notifications has to redirect to
+# /api/notifications/ and then 401, not quietly return the dashboard with 200.
+# Mounting the SPA at "/" broke exactly that — a Mount matches every path beneath it,
+# so unauthenticated requests to a mistyped endpoint were answered with HTML.
+_API_PREFIXES = ("/api", "/docs", "/redoc", "/openapi.json", "/health")
+
+
+def _is_api(path: str) -> bool:
+    return any(path == p or path.startswith(p + "/") or path.startswith(p + "?")
+               for p in _API_PREFIXES)
+
+
+if (_DIST / "index.html").exists():
+    # Only the built assets are mounted. Everything else reaches the SPA through the
+    # 404 handler below, which leaves routing — and slash redirects — untouched.
+    if (_DIST / "assets").is_dir():
+        app.mount("/assets", StaticFiles(directory=str(_DIST / "assets")), name="assets")
+
+    @app.get("/", include_in_schema=False)
+    def dashboard_index():
+        return FileResponse(_DIST / "index.html")
+
+    @app.exception_handler(404)
+    async def spa_fallback(request, exc):
+        """Serve the app for client-side routes; leave the API's 404s alone.
+
+        A refresh on /cases asks the server for /cases, which is not a file. Without
+        this the dashboard works until someone reloads the page.
+        """
+        if request.method == "GET" and not _is_api(request.url.path):
+            candidate = _DIST / request.url.path.lstrip("/")
+            if candidate.is_file() and _DIST in candidate.resolve().parents:
+                return FileResponse(candidate)
+            return FileResponse(_DIST / "index.html")
+        return JSONResponse(status_code=404, content={"detail": getattr(exc, "detail", "Not Found")})
+
+    log.info("Dashboard mounted", path=str(_DIST))
+else:
+    # Say which of the two situations this is, rather than 404-ing at the URL the
+    # CLI just printed.
+    log.warning("Dashboard not built — serving a placeholder", expected=str(_DIST))
+
+    @app.get("/", include_in_schema=False)
+    def dashboard_missing():
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "The dashboard has not been built.",
+                "fix": "cd frontend && npm install && npm run build",
+                "api_docs": "/docs",
+            },
+        )

@@ -124,8 +124,10 @@ async def test_a_pip_upgrade_alone_does_not_count_as_success(monkeypatch):
     result = await run_repair("browser")
 
     assert not result.ok
-    # It must have gone on to retry the install after the upgrade.
-    assert len(calls) == 3
+    # It must have gone on to retry the fetch after the upgrade rather than stopping
+    # at a successful pip step.
+    assert len(calls) == len(mod.REPAIRS["browser"].commands)
+    assert calls[-1][-1] == "fetch"
 
 
 # ── Filesystem repairs ───────────────────────────────────────────────────────
