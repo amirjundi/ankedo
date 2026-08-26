@@ -314,12 +314,38 @@ def _check_git() -> Check:
                       "Install from https://git-scm.com")
 
 
+# Vite 8, which frontend/package.json pins, refuses to run below this.
+_MIN_NODE = (20, 19)
+
+
 def _check_node() -> Check:
-    if shutil.which("node"):
-        return Check("Node.js", "pass", "Installed (for frontend dev)")
-    else:
-        return Check("Node.js", "warn", "Not found (optional, for frontend development)",
-                      "Install from https://nodejs.org")
+    """Node's presence is not the question — its version is.
+
+    This reported "Installed" for any node at all, so a version too old to build the
+    dashboard passed the doctor and then failed inside `npm run build`, where the
+    error is a Vite engine complaint rather than anything naming the doctor's claim.
+    """
+    node = shutil.which("node")
+    if not node:
+        return Check("Node.js", "warn", "Not found — needed to build the dashboard",
+                     "Install Node 20.19+ from https://nodejs.org")
+
+    try:
+        import subprocess
+
+        raw = subprocess.run([node, "--version"], capture_output=True, text=True,
+                             timeout=15).stdout.strip()
+        parts = raw.lstrip("v").split(".")
+        version = (int(parts[0]), int(parts[1]))
+    except Exception:
+        return Check("Node.js", "warn", "Installed, version unreadable")
+
+    if version < _MIN_NODE:
+        need = ".".join(str(p) for p in _MIN_NODE)
+        return Check("Node.js", "warn", f"{raw} is too old to build the dashboard (needs {need}+)",
+                     "Install a newer Node, or skip the dashboard — the API works without it")
+
+    return Check("Node.js", "pass", f"{raw}")
 
 
 def run_checks() -> list[Check]:

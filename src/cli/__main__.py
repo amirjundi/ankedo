@@ -154,20 +154,38 @@ def start_cmd(host: str | None, port: int | None, no_browser: bool):
         # re-prompts until it aborts, which is how `curl | bash` used to die.
         can_ask = sys.stdin.isatty()
         if (PROJECT_ROOT / "frontend" / "package.json").exists() and shutil.which("npm"):
-            if can_ask and Confirm.ask("  Build it now? (takes about a minute)", default=True):
+            if can_ask and Confirm.ask("  Build it now? (takes a minute or two)", default=True):
+                frontend = PROJECT_ROOT / "frontend"
+
+                def _npm(*args):
+                    return subprocess.run(
+                        ["npm", *args], cwd=frontend, capture_output=True, text=True,
+                        shell=(os.name == "nt"),
+                    )
+
+                # Build before install is the usual reason this fails on a fresh
+                # machine: dist/ is gitignored, and so is node_modules.
+                if not (frontend / "node_modules").exists():
+                    console.print("[dim]  Installing frontend dependencies...[/]", end=" ")
+                    installed = _npm("install", "--no-audit", "--no-fund")
+                    console.print("[green]✓[/]" if installed.returncode == 0 else "[red]✗[/]")
+
                 console.print("[dim]  Building...[/]", end=" ")
-                built = subprocess.run(
-                    ["npm", "run", "build"],
-                    cwd=PROJECT_ROOT / "frontend",
-                    capture_output=True,
-                    text=True,
-                    shell=(os.name == "nt"),
-                )
+                built = _npm("run", "build")
                 if built.returncode == 0 and dist_index.exists():
                     console.print("[green]✓[/]")
                 else:
-                    tail = (built.stderr or built.stdout or "").strip().splitlines()
-                    console.print(f"[red]✗ {tail[-1] if tail else 'build failed'}[/]")
+                    console.print("[red]✗[/]")
+                    # The last line is usually "npm ERR! ..." and says nothing. Show
+                    # the real complaint, which is where an unsupported Node version
+                    # or an out-of-memory kill actually appears.
+                    output = ((built.stderr or "") + "\n" + (built.stdout or "")).strip()
+                    interesting = [
+                        line for line in output.splitlines()
+                        if line.strip() and not line.startswith("npm notice")
+                    ]
+                    for line in interesting[-12:]:
+                        console.print(f"[dim]    {line[:160]}[/]")
         if not dist_index.exists():
             console.print(
                 "[dim]  The API and /docs still work. To build it later:[/]\n"
