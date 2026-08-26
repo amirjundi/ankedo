@@ -157,6 +157,26 @@ class QueueManager:
         await self.session.commit()
         log.info("Item marked done", item_id=item.id, final_state=final_state.value)
 
+    async def release(self, item: QueueItem, reason: str) -> None:
+        """Return a claimed item to the queue after a failed attempt.
+
+        dequeue claims an item by setting is_inflight, and dequeue only ever selects
+        rows where it is false. Nothing released the claim on failure, so an item that
+        failed once became permanently invisible: never retried, never reported, just
+        gone. On an endpoint that comes and goes — which is the deployment case — that
+        silently discarded every item attempted while it was down.
+
+        The item goes to the back of the queue rather than straight back to the front.
+        A poison item that fails every time would otherwise be picked first on every
+        cycle and starve everything behind it.
+        """
+        item.is_inflight = False
+        item.locked_by_worker = None
+        item.locked_at = None
+        item.priority = min(item.priority - 1, -1)
+        await self.session.commit()
+        log.info("Item returned to the queue", item_id=item.id, reason=reason[:200])
+
     async def requeue_inflight_on_restart(self) -> int:
         """Crash recovery: Find inflight items on startup and return them to the queue."""
         stmt = (

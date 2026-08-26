@@ -212,6 +212,7 @@ class OrchestrationLoop:
                     raise
                 except Exception as exc:
                     log.exception("Post processing failed", post_id=post.id, error=str(exc))
+                    await self.queue_manager.release(item, f"processing failed: {exc}")
 
                 processed += 1
         finally:
@@ -248,6 +249,10 @@ class OrchestrationLoop:
                 raise
             except Exception as exc:
                 log.exception("Classification failed", queue_item=item.id, error=str(exc))
+                # Give it back. Without this the item stays claimed forever and is
+                # never seen again — the whole batch is lost every time the model
+                # endpoint is unavailable.
+                await self.queue_manager.release(item, f"classification failed: {exc}")
             processed += 1
 
         if processed:
@@ -447,6 +452,17 @@ class OrchestrationLoop:
 
     async def run_forever(self) -> None:
         """Run continuously."""
+        # Anything still claimed belongs to a process that is no longer running —
+        # this one has not started yet. QueueManager has had this recovery since the
+        # beginning and nothing ever called it, so a kill mid-classification stranded
+        # the item permanently.
+        try:
+            requeued = await self.queue_manager.requeue_inflight_on_restart()
+            if requeued:
+                log.info("Recovered items stranded by a previous run", count=requeued)
+        except Exception as exc:  # recovery must never stop the agent starting
+            log.warning("Could not recover stranded items", error=str(exc))
+
         while True:
             try:
                 await self.run_cycle()
