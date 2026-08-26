@@ -114,6 +114,17 @@ class CollectionRunner:
             platform=account.platform, account_id=worker.id, proxy=worker.proxy
         )
 
+        # Apply whatever the tuner has decided. A spike shortens the delay, and
+        # before this the adjustment went nowhere: the worker read the static env
+        # value and paced exactly as it always had.
+        from src.core.self_tuner import SelfTuner
+
+        tuner = SelfTuner(self.session)
+        browser.set_pacing(
+            await tuner.current("pacing_min_delay_seconds"),
+            await tuner.current("pacing_max_delay_seconds"),
+        )
+
         await browser.start()
         try:
             collector = ResilientCollector(self.session, browser.page, adapter)

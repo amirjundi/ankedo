@@ -48,7 +48,6 @@ SELF_TUNABLE: dict[str, Tunable] = {
         Tunable("max_posts_per_account", 10, 1, 50, "queue depth vs coverage"),
         Tunable("max_comments_per_post", 100, 10, 500, "queue depth vs coverage"),
         Tunable("vision_max_steps_per_task", 12, 3, 40, "vision task success rate"),
-        Tunable("warmup_follows_per_day", 8, 1, 30, "follow rejection rate"),
     ]
 }
 

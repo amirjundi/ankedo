@@ -44,7 +44,6 @@ class AgentSettings(BaseSettings):
 
     gemini_api_key: Optional[str] = Field(default=None)
     openai_api_key: Optional[str] = Field(default=None)
-    anthropic_api_key: Optional[str] = Field(default=None)
 
     # Unset means api.openai.com. Point it at any /v1 that speaks chat completions.
     openai_base_url: Optional[str] = Field(default=None)
@@ -63,7 +62,6 @@ class AgentSettings(BaseSettings):
     triage_model: str = Field(default="gemini-3.5-flash-lite")
     specialist_model: str = Field(default="gemini-3.6-flash")
     critic_model: str = Field(default="gemini-3.5-flash-lite")
-    target_group_model: str = Field(default="gemini-3.5-flash-lite")
     vision_model: str = Field(default="gemini-3.6-flash")
     chat_agent_model: str = Field(default="gemini-3.6-flash")
 
@@ -74,7 +72,6 @@ class AgentSettings(BaseSettings):
     # not gradual overspend.
     daily_token_budget: int = Field(default=0, ge=0)
     per_case_token_budget: int = Field(default=0, ge=0)
-    vision_daily_call_budget: int = Field(default=0, ge=0)
     # Per-token USD rates. Default 0 because a wrong hardcoded price is worse than an
     # obviously absent one — set these from current Gemini pricing.
     input_token_cost_usd: float = Field(default=0.0, ge=0)
@@ -126,7 +123,6 @@ class AgentSettings(BaseSettings):
     # Autonomous Discovery
     # -----------------------------------------------------------------------
     auto_add_accounts_per_cycle: int = Field(default=5, ge=0)
-    large_network_threshold: int = Field(default=20, ge=1)
 
     # -----------------------------------------------------------------------
     # API security (NFR-DP-1/2)
@@ -170,20 +166,10 @@ class AgentSettings(BaseSettings):
     # How long a blocked session waits for a human before the account is quarantined.
     # Long enough that an admin away from the machine can still act; short enough that
     # a session does not sit at a checkpoint indefinitely.
-    handoff_timeout_minutes: int = Field(default=20, ge=1)
-    handoff_poll_seconds: int = Field(default=15, ge=1)
 
     # Follow pacing. A new account that follows 200 pages in an hour is flagged
     # immediately, so restoring coverage is spread across the warm-up period.
-    warmup_follows_per_day: int = Field(default=8, ge=1)
-    active_follows_per_day: int = Field(default=20, ge=1)
 
-    warmup_trust_threshold: int = Field(
-        default=50, ge=0, le=100, description="trust_score (0-100) needed to leave WARM_UP"
-    )
-    recovery_idle_hours: int = Field(
-        default=48, ge=1, description="Idle hours before a RECOVERY account returns to ACTIVE"
-    )
 
     # -----------------------------------------------------------------------
     # Vision browser
@@ -221,8 +207,6 @@ class AgentSettings(BaseSettings):
     # -----------------------------------------------------------------------
     pacing_min_delay_seconds: float = Field(default=2.5, ge=0.5)
     pacing_max_delay_seconds: float = Field(default=8.0, ge=1.0)
-    session_min_minutes: int = Field(default=20, ge=5)
-    session_max_minutes: int = Field(default=90, ge=10)
 
     # -----------------------------------------------------------------------
     # Queue Backpressure
@@ -256,19 +240,10 @@ class AgentSettings(BaseSettings):
     # -----------------------------------------------------------------------
     # WhatsApp Business Cloud API
     # -----------------------------------------------------------------------
-    whatsapp_phone_number_id: Optional[str] = Field(default=None)
-    whatsapp_access_token: Optional[str] = Field(default=None)
-    whatsapp_app_secret: Optional[str] = Field(default=None)
-    whatsapp_verify_token: Optional[str] = Field(default=None)
-    whatsapp_admin_phone: Optional[str] = Field(default=None)
-    whatsapp_webhook_url: Optional[str] = Field(default=None)
 
     # -----------------------------------------------------------------------
     # MCP Servers
     # -----------------------------------------------------------------------
-    mcp_servers: str = Field(default="", description="Comma-separated list of MCP server names")
-    mcp_tavily_search_url: Optional[str] = Field(default=None)
-    mcp_memory_url: Optional[str] = Field(default=None)
 
     # -----------------------------------------------------------------------
     # Security
@@ -298,13 +273,10 @@ class AgentSettings(BaseSettings):
     # -----------------------------------------------------------------------
     log_level: str = Field(default="INFO")
     log_dir: str = Field(default="./logs")
-    log_max_bytes: int = Field(default=10_485_760)  # 10 MB
-    log_backup_count: int = Field(default=5)
 
     # -----------------------------------------------------------------------
     # Proxy
     # -----------------------------------------------------------------------
-    residential_proxy_list: str = Field(default="", description="Comma-separated proxy URLs")
 
     @field_validator("database_url")
     @classmethod
@@ -343,13 +315,7 @@ class AgentSettings(BaseSettings):
             raise ValueError("borderline_high must be greater than borderline_low")
         return v
 
-    @property
-    def mcp_server_list(self) -> list[str]:
-        return [s.strip() for s in self.mcp_servers.split(",") if s.strip()]
 
-    @property
-    def proxy_list(self) -> list[str]:
-        return [p.strip() for p in self.residential_proxy_list.split(",") if p.strip()]
 
     @property
     def cors_origins(self) -> list[str]:

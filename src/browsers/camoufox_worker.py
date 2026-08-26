@@ -39,6 +39,10 @@ class CamoufoxWorker:
         self._context: BrowserContext | None = None
         self._page: Page | None = None
         self._camoufox = None
+        # None means "use the configured default"; set_pacing supplies the
+        # tuned values when a caller has a session to resolve them with.
+        self._pacing_min: float | None = None
+        self._pacing_max: float | None = None
 
     async def start(self) -> None:
         """Launch the Camoufox browser and load the persistent session."""
@@ -119,12 +123,31 @@ class CamoufoxWorker:
             await self._browser.close()
         self._camoufox = self._browser = self._context = self._page = None
 
+    def set_pacing(self, minimum: float, maximum: float) -> None:
+        """Override the configured pacing with values resolved from the tuner.
+
+        SelfTuner.adjust writes an AgentConfig row that only SelfTuner.current reads
+        back, while this method read settings.* — the static env value. So the one
+        live autonomy feature in the system tuned a number nothing consulted, and a
+        spike changed the agent's behaviour not at all. Whoever owns a session
+        resolves the live values and applies them here.
+        """
+        self._pacing_min = minimum
+        self._pacing_max = max(minimum, maximum)
+
+    @property
+    def pacing_bounds(self) -> tuple[float, float]:
+        minimum = self._pacing_min if self._pacing_min is not None else self.settings.pacing_min_delay_seconds
+        maximum = self._pacing_max if self._pacing_max is not None else self.settings.pacing_max_delay_seconds
+        return minimum, max(minimum, maximum)
+
     async def pacing_delay(self) -> None:
         """Human-like randomized pacing (Gaussian-distributed delay)."""
-        mu = (self.settings.pacing_min_delay_seconds + self.settings.pacing_max_delay_seconds) / 2
-        sigma = (self.settings.pacing_max_delay_seconds - self.settings.pacing_min_delay_seconds) / 4
+        minimum, maximum = self.pacing_bounds
+        mu = (minimum + maximum) / 2
+        sigma = (maximum - minimum) / 4
         delay = random.gauss(mu, sigma)
-        delay = max(self.settings.pacing_min_delay_seconds, min(delay, self.settings.pacing_max_delay_seconds))
+        delay = max(minimum, min(delay, maximum))
         await asyncio.sleep(delay)
 
     async def natural_scroll(self, page: Page) -> None:

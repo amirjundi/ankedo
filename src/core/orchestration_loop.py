@@ -335,12 +335,23 @@ class OrchestrationLoop:
                     )
 
             # Shorter pacing while a spike lasts — clamped by the tuner's bounds.
-            current = await tuner.current("pacing_min_delay_seconds")
-            await tuner.adjust(
-                "pacing_min_delay_seconds",
-                max(1.0, current / self.settings.crawl_multiplier_on_spike),
-                f"spike: {spike.describe()}",
-            )
+            #
+            # Both ends, not just the minimum. Delays are drawn from a Gaussian
+            # between the two, so shrinking the floor from 2.5s to 0.8s while leaving
+            # the ceiling at 8s moves the mean by well under a second: the agent
+            # crawled at essentially its normal rate through a spike it had just
+            # detected and raised an alert about.
+            multiplier = self.settings.crawl_multiplier_on_spike
+            for key, floor in (
+                ("pacing_min_delay_seconds", 1.0),
+                ("pacing_max_delay_seconds", 3.0),
+            ):
+                current = await tuner.current(key)
+                await tuner.adjust(
+                    key,
+                    max(floor, current / multiplier),
+                    f"spike: {spike.describe()}",
+                )
 
             await self.dispatcher.send(
                 type_="HateSpeechSpike",
