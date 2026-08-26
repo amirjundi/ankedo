@@ -28,7 +28,8 @@ from src.core.database import session_scope
 from src.core.queue_manager import QueueManager
 from src.core.settings import get_settings
 from src.models.comment import Comment
-from src.models.post import Post
+from src.models.post import Post, QueueState
+from src.models.queue_item import QueueStage
 from src.models.tracked_account import AccountSource, AccountStatus, TrackedAccount
 
 log = structlog.get_logger()
@@ -153,6 +154,7 @@ async def capture(request: CaptureRequest, session: AsyncSession = Depends(sessi
         content_media_urls=request.media_urls[:50],
         author_name=request.author_name,
         collected_at=datetime.now(timezone.utc).isoformat(),
+        queue_state=QueueState.CLASSIFICATION,
     )
     session.add(post)
     await session.flush()
@@ -160,10 +162,16 @@ async def capture(request: CaptureRequest, session: AsyncSession = Depends(sessi
     added = await _add_comments(session, post, request.comments)
     await session.commit()
 
-    # Straight onto the existing queue — the classifier does not care that a person
-    # rather than a crawler put it there.
-    await QueueManager(session).enqueue_discovery(
-        tracked_account_id=account.id, post_id=post.id, case_id=account.linked_case_id
+    # Straight to Classification, not Discovery. Discovery means "seen, comments not
+    # fetched yet", and the Processing stage that follows it drives a browser to go
+    # and get them. A capture already carries its comments, so it has nothing for
+    # that stage to do and no browser to do it with — enqueuing at Discovery would
+    # park it behind a fetch that can never happen.
+    await QueueManager(session).enqueue(
+        tracked_account_id=account.id,
+        post_id=post.id,
+        case_id=account.linked_case_id,
+        stage=QueueStage.CLASSIFICATION,
     )
 
     log.info("Captured a post from the extension", post_id=post.id, comments=added)

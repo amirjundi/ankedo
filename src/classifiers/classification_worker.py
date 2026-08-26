@@ -11,6 +11,8 @@ flagged.
 """
 from __future__ import annotations
 
+import json
+
 import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -93,7 +95,11 @@ class ClassificationWorker:
             comment.hate_speech_flag = result["hate_speech_flag"]
             comment.multi_agent_trace = result["trace"]
             # The bundle, not a bare string — what was judged has to be reconstructable.
-            comment.context_bundle_used = bundle.to_dict()
+            # Serialised, because the column is Text. Assigning the dict raised
+            # "type 'dict' is not supported" from the driver on every classification,
+            # rolling back the whole item — the next thing that would have broken
+            # after the queue gap, and equally invisible until something ran.
+            comment.context_bundle_used = json.dumps(bundle.to_dict(), ensure_ascii=False)
 
             if result["hate_speech_flag"]:
                 flagged += 1

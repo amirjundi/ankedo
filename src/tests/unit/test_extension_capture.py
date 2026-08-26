@@ -146,11 +146,13 @@ async def test_a_capture_is_queued_for_classification(session):
     assert item.is_inflight is False
 
 
-async def test_the_post_starts_in_discovery(session):
+async def test_the_post_starts_at_classification(session):
+    """Not Discovery: that stage waits for a browser to fetch comments a capture
+    already brought with it, so an item parked there never advances."""
     await _capture(session)
 
     post = (await session.execute(select(Post))).scalar_one()
-    assert post.queue_state == QueueState.DISCOVERY
+    assert post.queue_state == QueueState.CLASSIFICATION
 
 
 async def test_an_unknown_author_becomes_a_manual_account_not_a_crawl_target(session):

@@ -24,10 +24,25 @@ class QueueManager:
         self.session = session
         self.settings = get_settings()
 
-    async def enqueue_discovery(self, tracked_account_id: str, post_id: str, case_id: str | None = None, priority: int = 0) -> QueueItem:
-        """Enqueue a new post for processing (starts at Discovery stage)."""
+    async def enqueue(
+        self,
+        tracked_account_id: str,
+        post_id: str,
+        case_id: str | None = None,
+        priority: int = 0,
+        stage: QueueStage = QueueStage.DISCOVERY,
+    ) -> QueueItem:
+        """Put a post into the pipeline at a given stage.
+
+        Discovery is the default because that is where a crawled post starts: it has
+        been seen, but its comments have not been fetched yet. Content that arrives
+        with its comments already attached — a capture from the browser extension —
+        has nothing for the Processing stage to do and enters at Classification
+        instead. Sending it to Discovery would park it behind a browser fetch that is
+        neither needed nor possible.
+        """
         item = QueueItem(
-            stage=QueueStage.DISCOVERY,
+            stage=stage,
             priority=priority,
             case_id=case_id,
             tracked_account_id=tracked_account_id,
@@ -36,8 +51,14 @@ class QueueManager:
         )
         self.session.add(item)
         await self.session.commit()
-        log.info("Item enqueued for discovery", post_id=post_id, stage=QueueStage.DISCOVERY.value)
+        log.info("Item enqueued", post_id=post_id, stage=stage.value)
         return item
+
+    async def enqueue_discovery(self, tracked_account_id: str, post_id: str, case_id: str | None = None, priority: int = 0) -> QueueItem:
+        """Enqueue a newly discovered post, whose comments still need fetching."""
+        return await self.enqueue(
+            tracked_account_id, post_id, case_id, priority, QueueStage.DISCOVERY
+        )
 
     async def dequeue(self, stage: QueueStage, worker_id: str) -> QueueItem | None:
         """
