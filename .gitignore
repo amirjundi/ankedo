@@ -141,3 +141,4 @@ installer/build/
 # Ensure example configs are always tracked even if *.json would be ignored
 !config/*.example.json
 !.env.example
+data/models_dev.json

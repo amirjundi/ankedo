@@ -203,6 +203,9 @@ class ModelInfo:
     vision: bool | None = None
     cost_in: float | None = None
     context: int | None = None
+    # The committee parses every response into a Pydantic schema, so a model
+    # without structured output cannot do the job at all.
+    structured: bool | None = None
 
     @property
     def label(self) -> str:
@@ -267,6 +270,86 @@ def _parse_openai_model(row: dict) -> ModelInfo | None:
     )
 
 
+def _enrich(catalog: list[ModelInfo]) -> list[ModelInfo]:
+    """Fill gaps from models.dev, without overwriting what the endpoint declared.
+
+    A bare /v1/models gives ids only, which is most local proxies. The registry knows
+    what those ids are, so the join turns a list of names into something a default can
+    be chosen from. The endpoint still wins where the two disagree: it is serving the
+    model, the registry is describing it.
+    """
+    if not catalog:
+        return catalog
+
+    try:
+        from src.core.model_registry import annotate
+    except Exception:
+        return catalog
+
+    facts = annotate([m.id for m in catalog], allow_network=True)
+    if not facts:
+        return catalog
+
+    out = []
+    for model in catalog:
+        known = facts.get(model.id)
+        if known is None:
+            out.append(model)
+            continue
+        out.append(ModelInfo(
+            id=model.id,
+            name=model.name or known.name,
+            vision=model.vision if model.vision is not None else known.vision,
+            cost_in=model.cost_in if model.cost_in is not None else known.cost_in,
+            context=model.context or known.context,
+            structured=known.structured_output,
+        ))
+    return out
+
+
+def _client_url(base_url: str | None) -> str:
+    """A base URL a client can actually connect to.
+
+    0.0.0.0 means "every interface" to a server and is not a destination — a proxy
+    started with --host 0.0.0.0 reports itself that way, and the operator pastes it
+    in. Some stacks route it to loopback, others refuse outright, so it is normalised
+    rather than left to chance. The doctor showed exactly this: OPENAI_BASE_URL set to
+    http://0.0.0.0:6446/v1.
+    """
+    root = (base_url or "https://api.openai.com/v1").strip().rstrip("/")
+    return root.replace("://0.0.0.0:", "://127.0.0.1:").replace("://[::]:", "://127.0.0.1:")
+
+
+def _get_models_json(url: str, api_key: str) -> tuple[object | None, str]:
+    """GET a /models listing. Returns (payload, problem-description).
+
+    Retries without the Authorization header on a 401/403, because a local proxy
+    serving free models often has no auth and rejects a bearer it did not expect —
+    and we send "not-needed" as a placeholder for exactly those endpoints.
+    """
+    import httpx
+
+    attempts = [{"Authorization": f"Bearer {api_key}"} if api_key else {}, {}]
+    last = ""
+    for headers in attempts:
+        try:
+            resp = httpx.get(url, headers=headers, timeout=15, follow_redirects=True)
+        except Exception as exc:
+            return None, f"{type(exc).__name__}: {str(exc).splitlines()[0][:100]}"
+
+        if resp.status_code in (401, 403) and headers:
+            last = f"HTTP {resp.status_code} with a bearer token; retrying without one"
+            continue
+        if resp.status_code != 200:
+            body = " ".join((resp.text or "").split())[:160]
+            return None, f"HTTP {resp.status_code} from {url}{' - ' + body if body else ''}"
+        try:
+            return resp.json(), ""
+        except Exception:
+            return None, f"{url} returned {resp.headers.get('content-type', 'no content-type')}, not JSON"
+    return None, last or "no response"
+
+
 def fetch_catalog(provider_id: str, api_key: str, base_url: str | None = None) -> list[ModelInfo]:
     """Like fetch_models, but keeps whatever metadata the endpoint declared."""
     try:
@@ -293,15 +376,26 @@ def fetch_catalog(provider_id: str, api_key: str, base_url: str | None = None) -
                 ))
             return sorted(out, key=lambda m: m.id.lower())
 
-        root = (base_url or "https://api.openai.com/v1").rstrip("/")
-        resp = httpx.get(
-            f"{root}/models", headers={"Authorization": f"Bearer {api_key}"}, timeout=15
-        )
-        resp.raise_for_status()
-        payload = resp.json()
+        url = f"{_client_url(base_url)}/models"
+        payload, problem = _get_models_json(url, api_key)
+        if payload is None:
+            console.print(f"[yellow]  {problem}[/]")
+            return []
+
         rows = payload.get("data", payload) if isinstance(payload, dict) else payload
+        if not isinstance(rows, list):
+            console.print(f"[yellow]  {url} returned {type(rows).__name__}, not a list of models[/]")
+            return []
+
         parsed = [_parse_openai_model(row) for row in rows if isinstance(row, dict)]
-        return sorted((m for m in parsed if m), key=lambda m: m.id.lower())
+        catalog = _enrich(sorted((m for m in parsed if m), key=lambda m: m.id.lower()))
+        if rows and not catalog:
+            # Something came back and nothing survived: say so, rather than showing an
+            # empty list that looks identical to an endpoint serving no models.
+            console.print(
+                f"[yellow]  {url} listed {len(rows)} entries, none usable as chat models[/]"
+            )
+        return catalog
     except Exception as exc:
         hint = str(exc).splitlines()[0][:120] if str(exc) else type(exc).__name__
         console.print(f"[dim]Could not list models: {hint}[/]")
@@ -445,6 +539,31 @@ def _suggest(role: str, available: list[str], fallback: str) -> str:
     return by_cost[-1]
 
 
+def _warn_unstructured(config: dict, catalog: list[ModelInfo]) -> None:
+    """Flag any assigned model the registry says cannot return structured output.
+
+    Every committee response is parsed into a Pydantic schema, so a model without it
+    does not degrade — it fails on the first classification, with an error naming a
+    schema mismatch rather than the model choice that caused it.
+    """
+    unstructured = {m.id for m in catalog if m.structured is False}
+    hit = [
+        (env_key, config[env_key])
+        for env_key, _ in MODEL_ENV_KEYS.values()
+        if config.get(env_key) in unstructured
+    ]
+    if not hit:
+        return
+
+    console.print()
+    console.print(
+        "[yellow]⚠ These cannot return structured output, which the classifier requires:[/]"
+    )
+    for env_key, model in hit:
+        console.print(f"    [yellow]{env_key} = {model}[/]")
+    console.print("[dim]  They will fail on the first classification. Pick others where you can.[/]")
+
+
 def _choose_models(config: dict, provider_id: str, provider: dict, api_key: str,
                    base_url: str | None) -> None:
     """Assign a model to each role, from the provider's own list where possible."""
@@ -468,14 +587,23 @@ def _choose_models(config: dict, provider_id: str, provider: dict, api_key: str,
         return
 
     console.print(f"[green]✓ {len(available)} available[/]\n")
-    for index, name in enumerate(available, 1):
-        console.print(f"  [cyan]{index:>3}[/] {name}")
+    for index, model in enumerate(catalog, 1):
+        marks = []
+        if model.vision:
+            marks.append("vision")
+        if model.cost_in is not None:
+            marks.append(f"${model.cost_in:g}/Mtok")
+        if model.structured is False:
+            marks.append("[red]no structured output[/]")
+        suffix = f"  [dim]— {', '.join(marks)}[/]" if marks else ""
+        console.print(f"  [cyan]{index:>3}[/] {model.label}{suffix}")
     console.print()
 
     for role, (env_key, _) in MODEL_ENV_KEYS.items():
         config[env_key] = _suggest_from_catalog(role, catalog, provider["models"][role])
 
     console.print(_model_table(config))
+    _warn_unstructured(config, catalog)
     console.print()
 
     if not Confirm.ask("Change any of these?", default=False):
