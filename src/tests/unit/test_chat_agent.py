@@ -42,9 +42,11 @@ class FakeLLM:
     def __init__(self, **fields):
         self.decision = ChatDecision(**fields)
         self.system_instruction = None
+        self.prompt = ""
 
-    async def generate(self, *, system_instruction=None, **kwargs):
+    async def generate(self, *, system_instruction=None, prompt="", **kwargs):
         self.system_instruction = system_instruction
+        self.prompt = prompt
         return self.decision
 
 
@@ -219,3 +221,64 @@ async def test_an_empty_message_costs_no_model_call(session):
 
     assert agent.llm.system_instruction is None
     assert reply.action_run is None
+
+
+# ── Conversation memory ──────────────────────────────────────────────────────
+
+
+async def test_a_turn_is_remembered(session):
+    from sqlalchemy import select as sa_select
+
+    from src.models.chat_message import ChatMessage
+
+    await _agent(session, action="reply", message="42 items").handle("how many items?")
+
+    rows = (await session.execute(sa_select(ChatMessage))).scalars().all()
+    assert [r.is_from_agent for r in rows] == [False, True]
+    assert rows[0].content == "how many items?"
+    assert rows[1].content == "42 items"
+
+
+async def test_earlier_turns_reach_the_next_prompt(session):
+    """Without this, "and the other one?" has nothing to refer to."""
+    await _agent(session, action="reply", message="Yazidi and Christian").handle(
+        "which groups were flagged?"
+    )
+
+    agent = _agent(session, action="reply", message="ok")
+    await agent.handle("and the other one?")
+
+    prompt = agent.llm.prompt
+    assert "which groups were flagged?" in prompt
+    assert "Yazidi and Christian" in prompt
+
+
+async def test_another_channel_does_not_see_the_conversation(session):
+    """A Telegram thread must not surface as context in the dashboard."""
+    web = ChatAgent(session, llm=FakeLLM(action="reply", message="web answer"), channel="web")
+    await web.handle("dashboard question")
+
+    tg = ChatAgent(session, llm=FakeLLM(action="reply", message="ok"), channel="telegram")
+    await tg.handle("telegram question")
+
+    assert "dashboard question" not in tg.llm.prompt
+
+
+async def test_a_failed_model_call_is_not_remembered_as_a_reply(session):
+    from sqlalchemy import select as sa_select
+
+    from src.classifiers.llm_client import LLMError
+    from src.models.chat_message import ChatMessage
+
+    class Broken:
+        prompt = ""
+
+        async def generate(self, **kwargs):
+            raise LLMError("no route to host")
+
+    agent = ChatAgent(session, llm=Broken())
+    reply = await agent.handle("hello")
+
+    assert "no route to host" in reply.text
+    rows = (await session.execute(sa_select(ChatMessage))).scalars().all()
+    assert [r.is_from_agent for r in rows] == [False], "the failure was stored as a reply"

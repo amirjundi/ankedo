@@ -27,13 +27,21 @@ import structlog
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy import select
+
 from src.chat.tools import ACTIONS, ActionError, catalogue, run_action
+from src.models.chat_message import ChatMessage
 from src.classifiers.llm_client import LLMClient, LLMError
 from src.core.settings import get_settings
 
 log = structlog.get_logger()
 
-PROMPT_VERSION = "chat-v1"
+PROMPT_VERSION = "chat-v2"
+
+# How many past turns to replay. Enough for "and the other one?" to resolve, short
+# enough that a local model with a small context window is not pushed out of it by
+# conversation the operator has forgotten about.
+HISTORY_TURNS = 12
 
 SYSTEM_PROMPT = """You are the admin assistant for AnkEdo, a hate-speech monitoring \
 agent for Arabic and Kurdish social media. You are talking to the operator who runs it.
@@ -79,20 +87,75 @@ class ChatReply:
 
 
 class ChatAgent:
-    def __init__(self, session: AsyncSession, llm: LLMClient | None = None):
+    def __init__(
+        self,
+        session: AsyncSession,
+        llm: LLMClient | None = None,
+        *,
+        channel: str = "web",
+        user_id: str = "admin",
+    ):
         self.session = session
         self.settings = get_settings()
         self.llm = llm or LLMClient(session)
+        # Conversation is per channel and per person: a question asked in Telegram
+        # should not surface as context in the dashboard, and two operators must not
+        # read each other's session.
+        self.channel = channel
+        self.user_id = user_id
+
+    async def _history(self) -> str:
+        """The recent turns, oldest first, rendered for the prompt.
+
+        Without this every message was independent, so "what about last week?" and
+        "and the other one?" had nothing to refer to — the agent answered each line
+        as though it were the first thing said.
+        """
+        rows = (
+            await self.session.execute(
+                select(ChatMessage)
+                .where(
+                    ChatMessage.channel == self.channel,
+                    ChatMessage.user_id == self.user_id,
+                )
+                .order_by(ChatMessage.created_at.desc())
+                .limit(HISTORY_TURNS)
+            )
+        ).scalars().all()
+        if not rows:
+            return ""
+        lines = [
+            f"{'You' if row.is_from_agent else 'Operator'}: {row.content}"
+            for row in reversed(rows)
+        ]
+        return "Earlier in this conversation:\n" + "\n".join(lines)
+
+    async def _remember(self, content: str, *, from_agent: bool) -> None:
+        if not (content or "").strip():
+            return
+        self.session.add(
+            ChatMessage(
+                channel=self.channel,
+                user_id=self.user_id,
+                is_from_agent=from_agent,
+                # Trimmed: a dumped report should not crowd the next twelve turns.
+                content=content[:4000],
+            )
+        )
+        await self.session.commit()
 
     async def handle(self, message: str) -> ChatReply:
         """Interpret one operator message."""
         if not (message or "").strip():
             return ChatReply(text="Say that again?")
 
+        history = await self._history()
+        await self._remember(message, from_agent=False)
+
         try:
             decision = await self.llm.generate(
                 model=self.settings.chat_agent_model,
-                prompt=f"Operator says: {message}",
+                prompt=(f"{history}\n\n" if history else "") + f"Operator says: {message}",
                 schema=ChatDecision,
                 purpose="chat",
                 prompt_version=PROMPT_VERSION,
@@ -100,6 +163,8 @@ class ChatAgent:
             )
         except LLMError as exc:
             log.warning("Chat model call failed", error=str(exc))
+            # Not remembered: a failed call is not something the operator said, and
+            # replaying it as context would teach the next turn that it happened.
             return ChatReply(text=f"I could not reach the model: {exc}")
 
         name = (decision.action or "reply").strip()
@@ -108,7 +173,9 @@ class ChatAgent:
             # back to conversation rather than guessing at a near-match.
             if name != "reply":
                 log.info("Chat model named an unknown action", action=name)
-            return ChatReply(text=decision.message or "I am not sure what you need.")
+            text = decision.message or "I am not sure what you need."
+            await self._remember(text, from_agent=True)
+            return ChatReply(text=text)
 
         action = ACTIONS[name]
         arguments = {
@@ -150,6 +217,7 @@ class ChatAgent:
             return ChatReply(text=f"{name} failed: {exc}", action_run=name)
 
         log.info("Chat action ran", action=name)
+        await self._remember(result, from_agent=True)
         return ChatReply(text=result, action_run=name)
 
     @staticmethod

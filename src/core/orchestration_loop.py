@@ -152,6 +152,78 @@ class OrchestrationLoop:
             # Re-arm, so a browser that breaks again is reported again.
             self._browser_alert_sent = False
 
+    async def _process_discovery(self) -> None:
+        """Fetch comments for newly discovered posts, then hand them to classification.
+
+        This stage did not exist. Crawled posts were enqueued at Discovery,
+        PostProcessor — the thing that moves an item from Processing to Classification
+        — was never instantiated anywhere, and _process_queues drained Classification
+        only. Every crawled item sat at Discovery permanently, which is why nothing had
+        ever been classified.
+
+        A browser is needed here, unlike the capture path: Discovery means the post was
+        seen but its comments were not fetched. If the browser will not start, the
+        items stay queued for the next cycle rather than being lost.
+        """
+        from src.browsers.browser_factory import BrowserFactory
+        from src.browsers.camoufox_worker import BrowserUnavailable
+        from src.core.post_processor import PostProcessor
+        from src.platforms.registry import get_adapter
+
+        processed = 0
+        browsers: dict[str, object] = {}
+
+        try:
+            while processed < self.settings.max_review_batch_size:
+                item = await self.queue_manager.dequeue(
+                    QueueStage.DISCOVERY, worker_id="loop"
+                )
+                if item is None:
+                    break
+
+                post = (
+                    await self.session.execute(
+                        select(Post).where(Post.id == item.post_id)
+                    )
+                ).scalar_one_or_none()
+                if post is None:
+                    await self.queue_manager.mark_done(item)
+                    continue
+
+                # Processing is where the fetch happens; Discovery is only the record
+                # that the post exists.
+                await self.queue_manager.promote(item, QueueStage.PROCESSING)
+
+                try:
+                    if post.platform not in browsers:
+                        worker = BrowserFactory.create_worker(post.platform, "loop", None)
+                        await worker.start()
+                        browsers[post.platform] = worker
+                    browser = browsers[post.platform]
+
+                    await PostProcessor(
+                        self.session, self.queue_manager, browser, get_adapter(post.platform)
+                    ).process_item(item)
+                except BrowserUnavailable:
+                    # Put it back: the post is fine, the agent has no eyes. _collect
+                    # raises the alarm about that; losing the item as well would be a
+                    # second failure caused by the first.
+                    await self.queue_manager.promote(item, QueueStage.DISCOVERY)
+                    raise
+                except Exception as exc:
+                    log.exception("Post processing failed", post_id=post.id, error=str(exc))
+
+                processed += 1
+        finally:
+            for worker in browsers.values():
+                try:
+                    await worker.stop()
+                except Exception:  # noqa: BLE001 — teardown must not mask the cause
+                    pass
+
+        if processed:
+            log.info("Discovery queue processed", items=processed)
+
     async def _process_queues(self) -> None:
         """T083: Drain the classification queue.
 
@@ -331,7 +403,11 @@ class OrchestrationLoop:
 
         # 1b. Collect from due accounts — nothing else has anything to do without this
         await self._collect()
-        
+
+        # 1b. Fetch comments for what discovery found, so it can be classified. Without
+        # this step the queue only ever fills; nothing moves an item to Classification.
+        await self._process_discovery()
+
         # 2. Process Notifications (T064, T066)
         await self._handle_notifications()
         
