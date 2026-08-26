@@ -205,7 +205,16 @@ def start_cmd(host: str | None, port: int | None, no_browser: bool):
                 "[bold cyan]🔺 AnkEdo — Starting Agent[/]\n\n"
                 + dashboard_line
                 + f"[dim]API Docs:[/]  [bold]http://{api_host}:{api_port}/docs[/]\n"
-                "[dim]Press Ctrl+C to stop[/]"
+                # Say whether the agent is actually running. This printed a dashboard
+                # URL and nothing else while collecting nothing at all.
+                + (
+                    f"[dim]Agent:[/]     [green]running[/] "
+                    f"[dim](every {settings.loop_interval_seconds}s)[/]\n"
+                    if settings.run_agent_with_api
+                    else "[dim]Agent:[/]     [yellow]not running[/] "
+                         "[dim](RUN_AGENT_WITH_API=false)[/]\n"
+                )
+                + "[dim]Press Ctrl+C to stop[/]"
             ),
             border_style="cyan",
             padding=(1, 2),
@@ -540,8 +549,7 @@ def agent_group():
 @agent_group.command(name="run")
 @click.option("--continuous", is_flag=True, help="Run continuously in a loop")
 @click.option("--cycles", type=int, default=1, help="Number of cycles to run if not continuous")
-@click.option("--stage", type=str, help="Run only a specific pipeline stage")
-def agent_run(continuous: bool, cycles: int, stage: str | None):
+def agent_run(continuous: bool, cycles: int):
     """Start the monitoring agent orchestration loop."""
     from rich.console import Console
 

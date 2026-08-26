@@ -278,6 +278,12 @@ class AgentSettings(BaseSettings):
     # -----------------------------------------------------------------------
     # API Server
     # -----------------------------------------------------------------------
+    # `ankedo start` used to bring up the API and dashboard and nothing else — the
+    # orchestration loop was only reachable through `ankedo agent run --continuous`,
+    # so the obvious action collected nothing, forever, with no indication. Default
+    # true so "start" means start; set false to run the API alone.
+    run_agent_with_api: bool = Field(default=True)
+
     api_host: str = Field(default="127.0.0.1")
     api_port: int = Field(default=8000, ge=1024, le=65535)
 

@@ -3,6 +3,7 @@ FastAPI entry point for the local admin and reviewer dashboard.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import structlog
@@ -106,6 +107,53 @@ async def startup_event():
                     asyncio.create_task(start_telegram_bot(token, int(chat_id)))
             except Exception as e:
                 log.error("Failed to start Telegram bot", error=str(e))
+
+    # The agent itself. Without this, `ankedo start` served a dashboard and collected
+    # nothing — the loop existed but only `ankedo agent run --continuous` reached it,
+    # and nothing said so.
+    # Never under pytest. A TestClient triggers this startup hook, and an endless
+    # collection loop inside a test run hangs the suite and pollutes the database
+    # every other test is asserting against.
+    under_test = "PYTEST_CURRENT_TEST" in os.environ
+
+    if _settings.run_agent_with_api and not under_test:
+        app.state.agent_task = asyncio.create_task(_run_agent_loop())
+        log.info("Agent loop started", interval_seconds=_settings.loop_interval_seconds)
+    elif under_test:
+        log.debug("Agent loop not started: running under pytest")
+    else:
+        log.warning("Agent loop disabled — API only (RUN_AGENT_WITH_API=false)")
+
+
+async def _run_agent_loop() -> None:
+    """Own session and own loop, alongside the API.
+
+    A crash here must not take the API down with it: the dashboard is how an operator
+    finds out something is wrong, so it has to outlive the thing that went wrong.
+    """
+    from src.core.database import get_session
+    from src.core.orchestration_loop import OrchestrationLoop
+
+    try:
+        async with get_session() as session:
+            await OrchestrationLoop(session).run_forever()
+    except asyncio.CancelledError:
+        log.info("Agent loop stopped")
+        raise
+    except Exception as exc:
+        log.exception("Agent loop died", error=str(exc))
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    task = getattr(app.state, "agent_task", None)
+    if task and not task.done():
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):  # noqa: B014 — shutdown is best effort
+            pass
+
 
 @app.get("/health")
 def health_check():

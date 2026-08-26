@@ -6,14 +6,16 @@ from __future__ import annotations
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import session_scope
 from src.core.queue_manager import QueueManager
+from src.models.case import Case
 from src.models.post import Post, QueueState
 from src.models.queue_item import QueueItem, QueueStage
 from src.models.reviewer_decision import ReviewerDecision
+from src.models.target_group import TargetGroup
 
 log = structlog.get_logger()
 router = APIRouter(prefix="/api/review", tags=["review"])
@@ -44,17 +46,72 @@ async def get_review_queue(session: AsyncSession = Depends(session_scope)):
         # If the post text is missing, we flag a warning
         missing_context = not bool(post.content_text)
         
+        trace = post.multi_agent_trace or {}
+
         items.append({
             "queue_item_id": q_item.id,
             "post_id": post.id,
             "platform": post.platform,
             "url": post.url,
             "content": post.content_text,
+            "author": post.author_name,
             "missing_context_warning": missing_context,
             "score": post.classification_score if not missing_context else max(0.0, (post.classification_score or 0) - 0.2),
-            "trace": post.multi_agent_trace
+            "trace": trace,
+            "tropes_fired": trace.get("tropes_fired") or [],
+            "target_group": await _group_name(session, post),
+            "case_title": await _case_title(session, post),
+            # Prior confirmed verdicts against the same author. Shown to the reviewer
+            # as evidence — deliberately NOT added to ContextBundle. A classifier told
+            # that an author has been flagged before will flag them again, and the
+            # corroboration it produces is its own. The human can weigh a pattern; the
+            # model would only compound it.
+            "prior_confirmed": await _prior_confirmed(session, post),
         })
     return {"queue": items}
+
+
+async def _group_name(session: AsyncSession, post: Post) -> str | None:
+    if not post.target_group_id:
+        return None
+    group = (
+        await session.execute(
+            select(TargetGroup).where(TargetGroup.id == post.target_group_id)
+        )
+    ).scalar_one_or_none()
+    return group.display_name_en if group else None
+
+
+async def _case_title(session: AsyncSession, post: Post) -> str | None:
+    if not post.case_id:
+        return None
+    case = (
+        await session.execute(select(Case).where(Case.id == post.case_id))
+    ).scalar_one_or_none()
+    if case is None:
+        return None
+    # Cases have no title column; the narrative pattern is what identifies one to a
+    # human, falling back to the group it concerns.
+    return case.narrative_pattern or (
+        case.target_group.display_name_en if case.target_group else None
+    )
+
+
+async def _prior_confirmed(session: AsyncSession, post: Post) -> int:
+    """How many times this author has already been confirmed as hate speech."""
+    if not post.tracked_account_id:
+        return 0
+    return (
+        await session.scalar(
+            select(func.count(ReviewerDecision.id))
+            .join(Post, ReviewerDecision.post_id == Post.id)
+            .where(
+                Post.tracked_account_id == post.tracked_account_id,
+                Post.id != post.id,
+                ReviewerDecision.is_confirmed.is_(True),
+            )
+        )
+    ) or 0
 
 
 @router.post("/{queue_item_id}/submit")
