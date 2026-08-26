@@ -237,6 +237,7 @@ class _OpenAIBackend:
         schema: type[T],
         system_instruction: str | None,
         images: list[bytes] | None,
+        _corrected: bool = False,
     ) -> tuple[T, int, int]:
         strict = model not in self._strict_unsupported
         kwargs: dict = {
@@ -293,8 +294,21 @@ class _OpenAIBackend:
             raise LLMError(f"model refused: {choice.message.refusal}", **spent)
 
         text = choice.message.content
+
+        # A model given a schema sometimes decides the right move is a tool call and
+        # returns no content at all — finish_reason=tool_calls. The arguments are the
+        # object we asked for, so read them rather than reporting an empty response.
         if not text:
-            raise LLMError(f"empty response (finish_reason={choice.finish_reason})", **spent)
+            for call in (getattr(choice.message, "tool_calls", None) or []):
+                arguments = getattr(getattr(call, "function", None), "arguments", None)
+                if arguments:
+                    text = arguments
+                    break
+
+        if not text:
+            raise LLMError(
+                f"empty response (finish_reason={choice.finish_reason})", **spent
+            )
 
         try:
             parsed = schema.model_validate_json(_extract_json(text))
@@ -317,6 +331,27 @@ class _OpenAIBackend:
                     schema=schema,
                     system_instruction=system_instruction,
                     images=images,
+                )
+
+            # One corrective attempt, showing the model its own output. Weak models
+            # often comply when told concretely what was wrong, and losing a turn to
+            # a stray sentence is the difference between a chat that works and one
+            # the operator gives up on.
+            if not _corrected:
+                log.info("Reply did not parse; asking the model to correct it",
+                         model=model, schema=schema.__name__)
+                return await self.complete(
+                    model=model,
+                    prompt=(
+                        f"{prompt}\n\n"
+                        "Your previous reply could not be parsed as JSON:\n"
+                        f"{' '.join(text.split())[:400]}\n\n"
+                        "Return only the JSON object this time. Nothing else."
+                    ),
+                    schema=schema,
+                    system_instruction=system_instruction,
+                    images=images,
+                    _corrected=True,
                 )
 
             # Show what came back, trimmed. "did not match the schema" without the

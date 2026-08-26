@@ -68,7 +68,11 @@ Answer in the operator's language: reply in Arabic if they wrote Arabic."""
 class ChatDecision(BaseModel):
     """What the model decided to do. Parsed, not executed."""
 
-    action: str = Field(description="An action name, or 'reply' to just answer")
+    # Defaulted, not required. A weak model answering a greeting often returns just
+    # a message, and a missing field made the whole reply unparseable — the operator
+    # saw "could not reach the model" for a turn the model had answered fine.
+    # Conversation is the right reading of an unlabelled reply anyway.
+    action: str = Field(default="reply", description="An action name, or 'reply' to just answer")
     key: str = Field(default="", description="Setting name, for set_config")
     value: str = Field(default="", description="New value, for set_config")
     days: int = Field(default=7, description="Days of history, for stats")

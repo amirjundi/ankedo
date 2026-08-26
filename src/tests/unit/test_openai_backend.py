@@ -175,16 +175,32 @@ async def test_a_schema_mismatch_carries_its_token_cost(backend):
     """Two responses: a gateway that accepts json_schema without honouring it gets
     one retry through the prompt-level fallback before the error is raised."""
     bad = '{"wrong": "shape"}'
-    be, calls = backend([_response(bad, prompt_tokens=55), _response(bad, prompt_tokens=55)])
+    # Three attempts before giving up: strict, the prompt-level fallback, then one
+    # corrective pass that shows the model its own unparseable output.
+    be, calls = backend([_response(bad, prompt_tokens=55) for _ in range(3)])
 
     with pytest.raises(LLMError) as caught:
         await _complete(be)
 
     assert caught.value.prompt_tokens == 55
     assert "Verdict" in str(caught.value)
-    # The retry happened, and it carried the schema in the prompt rather than
-    # relying on response_format a second time.
-    assert [c["response_format"]["type"] for c in calls.calls] == ["json_schema", "json_object"]
+    assert [c["response_format"]["type"] for c in calls.calls] == [
+        "json_schema", "json_object", "json_object",
+    ]
+
+
+async def test_an_unparseable_reply_gets_one_corrective_attempt(backend):
+    """Weak models often comply when told concretely what was wrong. Losing a turn
+    to a stray sentence is the difference between a usable chat and an abandoned one."""
+    good = json.dumps({"is_hate": False, "confidence": 0.1, "notes": None})
+    be, calls = backend([_response("Sure!"), _response("Here you go:"), _response(good)])
+
+    parsed, _, _ = await _complete(be)
+
+    assert parsed.is_hate is False
+    correction = calls.calls[-1]["messages"][-1]["content"][0]["text"]
+    assert "could not be parsed" in correction
+    assert "Here you go:" in correction, "the model was not shown its own output"
 
 
 async def test_an_unhonoured_json_schema_is_retried_with_a_prompt_instruction(backend):
