@@ -9,6 +9,7 @@ Usage:
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import sys
 from dataclasses import dataclass
@@ -172,6 +173,175 @@ def _validate_api_key(provider_id: str, api_key: str, base_url: str | None = Non
         console.print(f"[yellow]⚠ Validation request failed: {e}[/]")
         return False
     return resp.status_code == 200
+
+
+# An OpenAI-style /models listing mixes in models that cannot answer a prompt. The
+# Gemini listing says so explicitly via supportedGenerationMethods; the OpenAI shape
+# does not, so they are excluded by name. "text-embedding-3-small" being offered as a
+# triage model is the failure this prevents — it sorts first as the cheapest.
+_NOT_CHAT = (
+    "embedding", "embed", "whisper", "tts", "dall-e", "dalle", "moderation",
+    "rerank", "stable-diffusion", "clip", "audio", "transcribe", "speech",
+)
+
+
+def _can_chat(model_id: str) -> bool:
+    return not any(word in model_id.lower() for word in _NOT_CHAT)
+
+
+def fetch_models(provider_id: str, api_key: str, base_url: str | None = None) -> list[str]:
+    """Ask the provider which models it actually serves.
+
+    The per-provider defaults in PROVIDERS are a starting point, not a truth: an
+    OpenAI-compatible proxy serves whatever it was configured with — Llama, Qwen,
+    DeepSeek, a local GGUF — and "gpt-4o" is simply not one of them. Offering a fixed
+    list there produces a config whose every call 404s.
+
+    Returns [] rather than raising when the endpoint cannot be reached or does not
+    implement the listing. Some gateways do not, and that is a reason to fall back to
+    typing a name, not a reason to stop setup.
+    """
+    try:
+        import httpx
+    except ImportError:
+        return []
+
+    try:
+        if provider_id == "gemini":
+            resp = httpx.get(
+                "https://generativelanguage.googleapis.com/v1beta/models",
+                params={"key": api_key},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            return sorted(
+                entry["name"].removeprefix("models/")
+                for entry in resp.json().get("models", [])
+                # Embedding and token-counting models cannot answer a prompt, and
+                # listing them invites picking one that fails on the first call.
+                if "generateContent" in (entry.get("supportedGenerationMethods") or [])
+            )
+
+        root = (base_url or "https://api.openai.com/v1").rstrip("/")
+        resp = httpx.get(
+            f"{root}/models", headers={"Authorization": f"Bearer {api_key}"}, timeout=15
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        # The OpenAI shape is {"data":[{"id":...}]}; some proxies return a bare list.
+        rows = payload.get("data", payload) if isinstance(payload, dict) else payload
+        return sorted(
+            str(row["id"])
+            for row in rows
+            if isinstance(row, dict) and row.get("id") and _can_chat(str(row["id"]))
+        )
+    except Exception as exc:
+        log_hint = str(exc).splitlines()[0][:120] if str(exc) else type(exc).__name__
+        console.print(f"[dim]Could not list models: {log_hint}[/]")
+        return []
+
+
+# Words that mark a small, cheap variant when no parameter count is in the name.
+_SMALL_WORDS = ("lite", "mini", "flash", "small", "haiku", "nano", "tiny", "instant")
+# Substrings that suggest a model can read an image. Deliberately specific: a loose
+# pattern like "-v" matches deepseek-v3, which cannot see anything.
+_VISION_WORDS = ("vision", "vl", "pixtral", "llava", "4o", "gemini", "claude-3", "sonnet")
+
+
+def _size_of(name: str) -> float | None:
+    """Parameter count in billions, when the name states one — 70b, 3b, 1.5b."""
+    match = re.search(r"(\d+(?:\.\d+)?)\s*b(?![a-z0-9])", name.lower())
+    return float(match.group(1)) if match else None
+
+
+def _rank(name: str) -> tuple[int, float]:
+    """Sort key from cheapest to most capable.
+
+    Parameter count first where it is stated, since it is the one honest signal a
+    model name carries. Otherwise fall back to the marketing words, which at least
+    order a vendor's own lineup correctly.
+    """
+    size = _size_of(name)
+    if size is not None:
+        return (0, size)
+    # More small-words means smaller: "flash-lite" is cheaper than "flash", and
+    # without this the tie is broken by listing order, which means nothing.
+    hits = sum(word in name.lower() for word in _SMALL_WORDS)
+    return (1, -float(hits))
+
+
+def _suggest(role: str, available: list[str], fallback: str) -> str:
+    """Pick a sensible default for a role out of what the provider actually serves.
+
+    Triage, the critic and group resolution run on every item, so they want the
+    cheapest model available; the specialist runs only on what survives triage and
+    wants the most capable. Getting this wrong is expensive rather than broken, and
+    the operator can override every choice.
+    """
+    if not available:
+        return fallback
+    if fallback in available:
+        return fallback
+
+    by_cost = sorted(available, key=_rank)
+
+    if role == "vision":
+        seeing = [m for m in by_cost if any(w in m.lower() for w in _VISION_WORDS)]
+        # No obvious vision model: the largest is the likeliest to be multimodal, and
+        # a wrong guess surfaces as a clear API error rather than a silent miss.
+        return (seeing or by_cost)[-1]
+    if role in ("triage", "critic", "target_group"):
+        return by_cost[0]
+    return by_cost[-1]
+
+
+def _choose_models(config: dict, provider_id: str, provider: dict, api_key: str,
+                   base_url: str | None) -> None:
+    """Assign a model to each role, from the provider's own list where possible."""
+    console.print("[dim]Asking the provider which models it serves...[/]", end=" ")
+    available = fetch_models(provider_id, api_key, base_url)
+
+    if not available:
+        console.print("[yellow]⚠ no list available[/]")
+        console.print(
+            "[dim]This endpoint does not list its models, so the defaults below are a\n"
+            "guess. Check them against your provider.[/]\n"
+        )
+        for role, (env_key, _) in MODEL_ENV_KEYS.items():
+            config[env_key] = provider["models"][role]
+        console.print(_model_table(config))
+        console.print()
+        if Confirm.ask("Type the model names yourself?", default=True):
+            for role, (env_key, label) in MODEL_ENV_KEYS.items():
+                config[env_key] = Prompt.ask(f"  {label}", default=config[env_key])
+        return
+
+    console.print(f"[green]✓ {len(available)} available[/]\n")
+    for index, name in enumerate(available, 1):
+        console.print(f"  [cyan]{index:>3}[/] {name}")
+    console.print()
+
+    for role, (env_key, _) in MODEL_ENV_KEYS.items():
+        config[env_key] = _suggest(role, available, provider["models"][role])
+
+    console.print(_model_table(config))
+    console.print()
+
+    if not Confirm.ask("Change any of these?", default=False):
+        return
+
+    console.print("[dim]Enter a number from the list, or a model name. Blank keeps it.[/]\n")
+    for role, (env_key, label) in MODEL_ENV_KEYS.items():
+        answer = Prompt.ask(f"  {label}", default=config[env_key]).strip()
+        if not answer:
+            continue
+        if answer.isdigit() and 1 <= int(answer) <= len(available):
+            answer = available[int(answer) - 1]
+        elif answer not in available:
+            # Not refused: a gateway can serve a model it does not advertise, and the
+            # operator may know better than its listing.
+            console.print(f"    [yellow]⚠ {answer} is not in the list — using it anyway[/]")
+        config[env_key] = answer
 
 
 def _enrol_with_code(base_url: str, agent_id: str) -> str:
@@ -359,6 +529,57 @@ def show_models():
     console.print(
         "\n[dim]Change one with:[/]\n"
         "  [cyan]ankedo configure set SPECIALIST_MODEL=gemini-3.6-flash[/]\n"
+    )
+
+
+def list_available_models():
+    """Print what the configured provider serves — `ankedo configure list-models`."""
+    config = _load_existing_env()
+    if not config:
+        console.print("[red]✗ No .env found. Run 'ankedo setup' first.[/]")
+        sys.exit(1)
+
+    provider_id = (config.get("LLM_PROVIDER") or "gemini").strip().lower()
+    if provider_id not in PROVIDERS:
+        console.print(f"[red]✗ Unknown LLM_PROVIDER={provider_id!r}[/]")
+        sys.exit(1)
+
+    key = config.get(PROVIDERS[provider_id]["key_env"], "")
+    if not key:
+        console.print(f"[red]✗ {PROVIDERS[provider_id]['key_env']} is not set.[/]")
+        sys.exit(1)
+
+    base_url = config.get("OPENAI_BASE_URL") or None
+    where = base_url or PROVIDERS[provider_id]["name"]
+    console.print(f"\n[dim]Asking {where}...[/]")
+
+    available = fetch_models(provider_id, key, base_url)
+    if not available:
+        console.print(
+            "[yellow]⚠ This endpoint does not list its models.[/]\n"
+            "[dim]Set one directly: ankedo configure set SPECIALIST_MODEL=<name>[/]\n"
+        )
+        return
+
+    in_use = {config.get(env_key) for env_key, _ in MODEL_ENV_KEYS.values()}
+    console.print(f"\n[bold]{len(available)} models available[/]\n")
+    for name in available:
+        mark = "[green] ← in use[/]" if name in in_use else ""
+        console.print(f"  {name}{mark}")
+
+    console.print()
+    console.print(_model_table(config))
+    # A model in .env that the provider no longer serves fails on the next call, and
+    # the error names the model rather than saying it was withdrawn.
+    stale = sorted(m for m in in_use if m and m not in available)
+    if stale:
+        console.print(
+            f"\n[yellow]⚠ Assigned but not served: {', '.join(stale)}[/]\n"
+            "[dim]These will fail when called.[/]"
+        )
+    console.print(
+        "\n[dim]Change one with:[/]\n"
+        "  [cyan]ankedo configure set SPECIALIST_MODEL=<name>[/]\n"
     )
 
 
@@ -556,24 +777,11 @@ def run_setup(non_interactive: bool = False, reconfigure: bool = False):
     # ── Step 3: Model Configuration ──────────────────────────────────────
     _step_header(3, total_steps, "Model Configuration")
 
-    # All six roles, not the four the wizard used to write — VISION_MODEL and
-    # TARGET_GROUP_MODEL are real settings, and leaving them unwritten is how a config
-    # ends up half on one provider's model ids. Switching provider replaces them
-    # outright: gemini-3.6-flash means nothing to an OpenAI endpoint.
-    switched = existing.get("LLM_PROVIDER", "gemini") != provider_id
-    for role, (env_key, _) in MODEL_ENV_KEYS.items():
-        if switched or not config.get(env_key):
-            config[env_key] = provider["models"][role]
-
-    console.print(_model_table(config))
-    console.print()
-
-    if Confirm.ask("Customize model assignments?", default=False):
-        for role, (env_key, label) in MODEL_ENV_KEYS.items():
-            config[env_key] = Prompt.ask(f"  {label}", default=config[env_key])
-        console.print("[green]✓ Models updated[/]")
-    else:
-        console.print("[green]✓ Using defaults[/]")
+    # All six roles, from the provider's own list where it has one. The defaults in
+    # PROVIDERS are only a fallback: an OpenAI-compatible proxy serves whatever it was
+    # configured with, and gpt-4o is usually not among it.
+    _choose_models(config, provider_id, provider, api_key, config.get("OPENAI_BASE_URL"))
+    console.print("[green]✓ Models set[/]")
 
     # ── Step 4: Notification Channels ────────────────────────────────────
     _step_header(4, total_steps, "Notification Channels (Optional)")

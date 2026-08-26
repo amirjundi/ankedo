@@ -13,6 +13,7 @@ Usage:
 """
 import asyncio
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -61,6 +62,13 @@ def configure_models_cmd():
     show_models()
 
 
+@configure_group.command(name="list-models")
+def configure_list_models_cmd():
+    """List the models the configured provider actually serves."""
+    from src.cli.setup_wizard import list_available_models
+    list_available_models()
+
+
 @configure_group.command(name="set")
 @click.argument("pairs", nargs=-1, required=True, metavar="KEY=VALUE...")
 def configure_set_cmd(pairs: tuple[str, ...]):
@@ -99,6 +107,7 @@ def start_cmd(host: str | None, port: int | None, no_browser: bool):
     """Start the AnkEdo agent and web dashboard."""
     from rich.console import Console
     from rich.panel import Panel
+    from rich.prompt import Confirm
     from rich.text import Text
     console = Console()
 
@@ -135,13 +144,49 @@ def start_cmd(host: str | None, port: int | None, no_browser: bool):
             )
             sys.exit(1)
 
+    # The dashboard is a built artefact and dist/ is gitignored, so a fresh checkout
+    # has none. Announcing a URL that serves nothing is how an operator concludes the
+    # whole agent is broken.
+    dist_index = PROJECT_ROOT / "frontend" / "dist" / "index.html"
+    if not dist_index.exists():
+        console.print("\n[yellow]⚠ The dashboard has not been built.[/]")
+        # Only offer when someone is there to answer: Confirm.ask on a closed stdin
+        # re-prompts until it aborts, which is how `curl | bash` used to die.
+        can_ask = sys.stdin.isatty()
+        if (PROJECT_ROOT / "frontend" / "package.json").exists() and shutil.which("npm"):
+            if can_ask and Confirm.ask("  Build it now? (takes about a minute)", default=True):
+                console.print("[dim]  Building...[/]", end=" ")
+                built = subprocess.run(
+                    ["npm", "run", "build"],
+                    cwd=PROJECT_ROOT / "frontend",
+                    capture_output=True,
+                    text=True,
+                    shell=(os.name == "nt"),
+                )
+                if built.returncode == 0 and dist_index.exists():
+                    console.print("[green]✓[/]")
+                else:
+                    tail = (built.stderr or built.stdout or "").strip().splitlines()
+                    console.print(f"[red]✗ {tail[-1] if tail else 'build failed'}[/]")
+        if not dist_index.exists():
+            console.print(
+                "[dim]  The API and /docs still work. To build it later:[/]\n"
+                "[dim]    cd frontend && npm install && npm run build[/]"
+            )
+
+    dashboard_line = (
+        f"[dim]Dashboard:[/] [bold]http://{api_host}:{api_port}[/]\n"
+        if dist_index.exists()
+        else "[dim]Dashboard:[/] [yellow]not built[/]\n"
+    )
+
     console.print()
     console.print(
         Panel(
             Text.from_markup(
                 "[bold cyan]🔺 AnkEdo — Starting Agent[/]\n\n"
-                f"[dim]Dashboard:[/] [bold]http://{api_host}:{api_port}[/]\n"
-                f"[dim]API Docs:[/]  [bold]http://{api_host}:{api_port}/docs[/]\n"
+                + dashboard_line
+                + f"[dim]API Docs:[/]  [bold]http://{api_host}:{api_port}/docs[/]\n"
                 "[dim]Press Ctrl+C to stop[/]"
             ),
             border_style="cyan",
@@ -171,7 +216,8 @@ def start_cmd(host: str | None, port: int | None, no_browser: bool):
             console.print(f"[yellow]⚠ {e}[/]")
 
     # Open browser
-    if not no_browser:
+    # Only when there is something to show; /docs is not what they asked for.
+    if not no_browser and dist_index.exists():
         import webbrowser
         import threading
         def _open():

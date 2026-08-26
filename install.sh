@@ -293,6 +293,16 @@ if [ -f "$PROJECT_ROOT/frontend/package.json" ]; then
     if command -v node &>/dev/null; then
         cd "$PROJECT_ROOT/frontend"
         npm install --silent 2>/dev/null
+        # And build it. dist/ is gitignored, so without this step there is no
+        # dashboard on the machine at all — `ankedo start` printed a URL that served
+        # nothing, because nothing had ever produced the files it points at.
+        info "Building the dashboard..."
+        if npm run build --silent 2>/dev/null; then
+            ok "Dashboard built"
+        else
+            warn "Dashboard build failed — the API still works, the web UI will not"
+            info "Retry with: cd $PROJECT_ROOT/frontend && npm run build"
+        fi
         cd "$PROJECT_ROOT"
         ok "Frontend dependencies installed"
     else
