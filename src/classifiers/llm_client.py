@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import time
 from typing import TypeVar
 
@@ -272,13 +273,71 @@ class _OpenAIBackend:
             raise LLMError(f"empty response (finish_reason={choice.finish_reason})", **spent)
 
         try:
-            parsed = schema.model_validate_json(text)
+            parsed = schema.model_validate_json(_extract_json(text))
         except Exception as exc:
+            # Show what came back, trimmed. "did not match the schema" without the
+            # payload leaves nothing to act on.
+            preview = " ".join(text.split())[:200]
             raise LLMError(
-                f"response did not match {schema.__name__}: {exc}", **spent
+                f"response did not match {schema.__name__}: {exc}. Model said: {preview!r}",
+                **spent,
             ) from exc
 
         return parsed, spent["prompt_tokens"], spent["output_tokens"]
+
+
+def _extract_json(text: str) -> str:
+    """Pull the JSON object out of a reply that is not only JSON.
+
+    Paid endpoints honour `response_format` and return bare JSON. Free and open
+    models frequently do not: they answer with a sentence, then a ```json fence, then
+    sometimes a closing remark. Pydantic rejects all of that as invalid JSON and the
+    chat reports "response did not match ChatDecision" — which reads to an operator as
+    the agent being broken rather than the model being chatty.
+
+    Strategy, cheapest first: the whole string, then the contents of a fence, then the
+    first balanced object in the text. Balanced rather than a greedy regex, because a
+    rationale containing a brace is ordinary in this domain.
+    """
+    stripped = text.strip()
+
+    # Whole-string first, but only if it really is valid JSON. Testing merely for a
+    # leading brace let "{...}\n\nLet me know if you need anything else!" through,
+    # which is a shape these models produce constantly.
+    try:
+        json.loads(stripped)
+        return stripped
+    except ValueError:
+        pass
+
+    fence = re.search(r"```(?:json)?\s*(.+?)\s*```", stripped, re.DOTALL)
+    if fence:
+        inner = fence.group(1).strip()
+        if inner.startswith("{"):
+            return inner
+
+    start = stripped.find("{")
+    if start == -1:
+        return stripped
+
+    depth, in_string, escaped = 0, False, False
+    for index in range(start, len(stripped)):
+        char = stripped[index]
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+        elif char == '"':
+            in_string = not in_string
+        elif not in_string:
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return stripped[start:index + 1]
+    return stripped
 
 
 def _looks_like_unsupported_format(exc: Exception) -> bool:
