@@ -24,6 +24,10 @@ const Chat = () => {
   const [isLoading, setIsLoading] = useState(false);
   // A change the agent proposed and a human has not yet agreed to.
   const [pending, setPending] = useState(null);
+  // Nothing else in the dashboard authenticates yet, so this page carries the only
+  // way to supply the admin token. Shown when there is none, or one was rejected.
+  const [needsToken, setNeedsToken] = useState(!token());
+  const [tokenDraft, setTokenDraft] = useState('');
 
   const append = useCallback((msg) => {
     setMessages(prev => [...prev, { timestamp: new Date().toISOString(), ...msg }]);
@@ -32,17 +36,28 @@ const Chat = () => {
   const post = useCallback(async (body) => {
     setIsLoading(true);
     try {
+      // Only send the header when there is something to put in it. "Bearer " with an
+      // empty token is an illegal header value, and the browser rejects the request
+      // before it leaves — surfacing as "Failed to fetch", which reads like the agent
+      // is unreachable when in fact nothing was ever sent.
+      const bearer = token();
       const res = await fetch(CHAT_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token()}`,
+          ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
         },
         body: JSON.stringify(body),
       });
 
       if (res.status === 401 || res.status === 403) {
-        append({ direction: 'agent', content: 'Not authorised. Sign in again.' });
+        setNeedsToken(true);
+        append({
+          direction: 'agent',
+          content: bearer
+            ? 'That token was rejected. Check ADMIN_API_TOKEN in your .env.'
+            : 'I need your admin token before we can talk. Paste it below.',
+        });
         return;
       }
       if (res.status === 503) {
@@ -91,6 +106,17 @@ const Chat = () => {
     append({ direction: 'agent', content: 'Cancelled — nothing was changed.' });
   }, [append]);
 
+  const saveToken = useCallback(() => {
+    const value = tokenDraft.trim();
+    if (!value) return;
+    // sessionStorage, not localStorage: the token dies with the tab rather than
+    // sitting on disk on a machine that holds evidence about people at risk.
+    sessionStorage.setItem('ankedo_token', value);
+    setTokenDraft('');
+    setNeedsToken(false);
+    append({ direction: 'agent', content: 'Token saved. Ask me something.' });
+  }, [tokenDraft, append]);
+
   const describe = (p) => {
     if (!p) return '';
     const a = p.arguments || {};
@@ -112,6 +138,29 @@ const Chat = () => {
           <span>Agent Online</span>
         </div>
       </header>
+
+      {needsToken && (
+        <div className="chat-token glass-panel">
+          <label htmlFor="token">
+            Admin token — the value of <code>ADMIN_API_TOKEN</code> in your .env
+          </label>
+          <div className="chat-token-row">
+            <input
+              id="token"
+              type="password"
+              value={tokenDraft}
+              placeholder="paste it here"
+              onChange={e => setTokenDraft(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && saveToken()}
+            />
+            <button onClick={saveToken} disabled={!tokenDraft.trim()}>Save</button>
+          </div>
+          <p className="chat-token-hint">
+            Kept for this browser tab only. Find it with:
+            <code>grep ADMIN_API_TOKEN ~/AnkEdo/.env</code>
+          </p>
+        </div>
+      )}
 
       <div className="chat-container glass-panel">
         <ChatPanel
