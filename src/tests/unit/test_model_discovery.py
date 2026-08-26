@@ -134,3 +134,84 @@ def test_a_default_the_provider_serves_is_kept():
 
 def test_an_empty_listing_falls_back_to_the_provider_default():
     assert _pick("specialist", []) == PROVIDERS["openai"]["models"]["specialist"]
+
+
+# ── Declared metadata beats the name heuristic ───────────────────────────────
+#
+# Read off openclaw/openclaw, which keeps a declared catalog per provider (id, name,
+# input modalities, cost, context window) instead of inferring from ids, and only
+# fetches live where the catalog is per-account. Our proxies cannot be catalogued in
+# advance, so we fetch live and read whatever the endpoint declares.
+
+from src.cli.setup_wizard import ModelInfo, _parse_openai_model, _suggest_from_catalog
+
+OPENROUTER_ROWS = [
+    {"id": "meta-llama/llama-3.2-3b-instruct", "name": "Llama 3.2 3B",
+     "architecture": {"input_modalities": ["text"]}, "pricing": {"prompt": "0.015"}},
+    {"id": "meta-llama/llama-3.3-70b-instruct", "name": "Llama 3.3 70B",
+     "architecture": {"input_modalities": ["text"]}, "pricing": {"prompt": "0.6"}},
+    {"id": "mistralai/pixtral-12b", "name": "Pixtral 12B",
+     "architecture": {"input_modalities": ["text", "image"]}, "pricing": {"prompt": "0.1"}},
+]
+
+
+def _catalog(rows=None):
+    return [m for m in (_parse_openai_model(r) for r in (rows or OPENROUTER_ROWS)) if m]
+
+
+def test_declared_modality_is_read():
+    by_id = {m.id: m for m in _catalog()}
+
+    assert by_id["mistralai/pixtral-12b"].vision is True
+    assert by_id["meta-llama/llama-3.3-70b-instruct"].vision is False
+
+
+def test_declared_price_is_read():
+    assert _catalog()[0].cost_in is not None
+
+
+def test_a_copilot_style_capability_block_is_read():
+    model = _parse_openai_model(
+        {"id": "gpt-4o", "object": "model",
+         "capabilities": {"type": "chat", "supports": {"vision": True},
+                          "limits": {"max_context_window_tokens": 128000}}}
+    )
+
+    assert model.vision is True
+    assert model.context == 128000
+
+
+def test_a_non_model_object_is_rejected():
+    assert _parse_openai_model({"id": "router-x", "object": "router"}) is None
+    assert _parse_openai_model({"id": "e5", "capabilities": {"type": "embedding"}}) is None
+
+
+def test_price_decides_the_cheap_roles_not_the_name():
+    """The name heuristic got this wrong twice; a declared price cannot."""
+    catalog = _catalog()
+
+    for role in ("triage", "critic", "target_group"):
+        assert _suggest_from_catalog(role, catalog, "absent") == "meta-llama/llama-3.2-3b-instruct"
+    assert _suggest_from_catalog("specialist", catalog, "absent") == "meta-llama/llama-3.3-70b-instruct"
+
+
+def test_declared_vision_wins_over_the_name():
+    """pixtral-12b is neither the largest nor named like a vision model here."""
+    assert _suggest_from_catalog("vision", _catalog(), "absent") == "mistralai/pixtral-12b"
+
+
+def test_the_cheapest_seeing_model_is_preferred():
+    catalog = _catalog(OPENROUTER_ROWS + [
+        {"id": "expensive/vision-xl", "architecture": {"input_modalities": ["text", "image"]},
+         "pricing": {"prompt": "9.0"}},
+    ])
+
+    assert _suggest_from_catalog("vision", catalog, "absent") == "mistralai/pixtral-12b"
+
+
+def test_an_endpoint_declaring_nothing_still_gets_the_heuristic():
+    """A bare /v1/models has ids and nothing else — most local proxies."""
+    catalog = [ModelInfo(id="llama-3.2-3b"), ModelInfo(id="llama-3.3-70b")]
+
+    assert _suggest_from_catalog("triage", catalog, "absent") == "llama-3.2-3b"
+    assert _suggest_from_catalog("specialist", catalog, "absent") == "llama-3.3-70b"

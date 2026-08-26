@@ -189,6 +189,125 @@ def _can_chat(model_id: str) -> bool:
     return not any(word in model_id.lower() for word in _NOT_CHAT)
 
 
+@dataclass(frozen=True)
+class ModelInfo:
+    """One model, with whatever the endpoint was willing to say about it.
+
+    Everything past `id` is optional because a plain OpenAI-shaped /v1/models returns
+    ids and nothing else. Richer endpoints — OpenRouter, LiteLLM, Copilot — declare
+    modality and price, and a declared fact beats anything inferred from the name.
+    """
+
+    id: str
+    name: str = ""
+    vision: bool | None = None
+    cost_in: float | None = None
+    context: int | None = None
+
+    @property
+    def label(self) -> str:
+        return f"{self.name} ({self.id})" if self.name and self.name != self.id else self.id
+
+
+def _as_float(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_openai_model(row: dict) -> ModelInfo | None:
+    """Read one row of an OpenAI-shaped /models listing.
+
+    The base shape carries only `id`, but the field names below are what the common
+    gateways actually add, so reading them costs nothing and removes a guess:
+      - `object` distinguishes a model from an embedding or a router
+      - OpenRouter: architecture.input_modalities, pricing.prompt
+      - Copilot-style: capabilities.supports.vision, capabilities.limits
+    """
+    model_id = str(row.get("id") or "").strip()
+    if not model_id or not _can_chat(model_id):
+        return None
+    if row.get("object") and row["object"] != "model":
+        return None
+
+    capabilities = row.get("capabilities") or {}
+    if capabilities.get("type") and capabilities["type"] != "chat":
+        return None
+
+    architecture = row.get("architecture") or {}
+    modalities = architecture.get("input_modalities") or architecture.get("modality") or []
+    if isinstance(modalities, str):
+        modalities = [modalities]
+
+    vision = None
+    if modalities:
+        vision = any("image" in str(m).lower() for m in modalities)
+    elif isinstance((capabilities.get("supports") or {}).get("vision"), bool):
+        vision = capabilities["supports"]["vision"]
+
+    pricing = row.get("pricing") or {}
+    cost_in = _as_float(pricing.get("prompt") or pricing.get("input"))
+    if cost_in is None:
+        cost_in = _as_float((row.get("cost") or {}).get("input"))
+
+    limits = capabilities.get("limits") or {}
+    context = (
+        row.get("context_length")
+        or row.get("context_window")
+        or limits.get("max_context_window_tokens")
+    )
+
+    return ModelInfo(
+        id=model_id,
+        name=str(row.get("name") or "").strip(),
+        vision=vision,
+        cost_in=cost_in,
+        context=int(context) if isinstance(context, (int, float)) else None,
+    )
+
+
+def fetch_catalog(provider_id: str, api_key: str, base_url: str | None = None) -> list[ModelInfo]:
+    """Like fetch_models, but keeps whatever metadata the endpoint declared."""
+    try:
+        import httpx
+    except ImportError:
+        return []
+
+    try:
+        if provider_id == "gemini":
+            resp = httpx.get(
+                "https://generativelanguage.googleapis.com/v1beta/models",
+                params={"key": api_key},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            out = []
+            for entry in resp.json().get("models", []):
+                if "generateContent" not in (entry.get("supportedGenerationMethods") or []):
+                    continue
+                out.append(ModelInfo(
+                    id=entry["name"].removeprefix("models/"),
+                    name=str(entry.get("displayName") or "").strip(),
+                    context=entry.get("inputTokenLimit"),
+                ))
+            return sorted(out, key=lambda m: m.id.lower())
+
+        root = (base_url or "https://api.openai.com/v1").rstrip("/")
+        resp = httpx.get(
+            f"{root}/models", headers={"Authorization": f"Bearer {api_key}"}, timeout=15
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        rows = payload.get("data", payload) if isinstance(payload, dict) else payload
+        parsed = [_parse_openai_model(row) for row in rows if isinstance(row, dict)]
+        return sorted((m for m in parsed if m), key=lambda m: m.id.lower())
+    except Exception as exc:
+        hint = str(exc).splitlines()[0][:120] if str(exc) else type(exc).__name__
+        console.print(f"[dim]Could not list models: {hint}[/]")
+        return []
+
+
 def fetch_models(provider_id: str, api_key: str, base_url: str | None = None) -> list[str]:
     """Ask the provider which models it actually serves.
 
@@ -230,11 +349,8 @@ def fetch_models(provider_id: str, api_key: str, base_url: str | None = None) ->
         payload = resp.json()
         # The OpenAI shape is {"data":[{"id":...}]}; some proxies return a bare list.
         rows = payload.get("data", payload) if isinstance(payload, dict) else payload
-        return sorted(
-            str(row["id"])
-            for row in rows
-            if isinstance(row, dict) and row.get("id") and _can_chat(str(row["id"]))
-        )
+        parsed = [_parse_openai_model(row) for row in rows if isinstance(row, dict)]
+        return sorted((m.id for m in parsed if m), key=str.lower)
     except Exception as exc:
         log_hint = str(exc).splitlines()[0][:120] if str(exc) else type(exc).__name__
         console.print(f"[dim]Could not list models: {log_hint}[/]")
@@ -270,6 +386,40 @@ def _rank(name: str) -> tuple[int, float]:
     return (1, -float(hits))
 
 
+def _suggest_from_catalog(role: str, catalog: list[ModelInfo], fallback: str) -> str:
+    """Choose using what the endpoint declared, falling back to the name heuristic.
+
+    A declared price or modality is a fact; "3b" in a model name is a guess that has
+    already been wrong twice. Endpoints that declare nothing still get the heuristic,
+    because that is all a bare /v1/models supports.
+    """
+    if not catalog:
+        return fallback
+    ids = [m.id for m in catalog]
+    if fallback in ids:
+        return fallback
+
+    if role == "vision":
+        declared = [m for m in catalog if m.vision is True]
+        if declared:
+            # Cheapest that can actually see, where price is known.
+            priced = [m for m in declared if m.cost_in is not None]
+            return min(priced, key=lambda m: m.cost_in).id if priced else declared[0].id
+        if any(m.vision is False for m in catalog) and all(
+            m.vision is not None for m in catalog
+        ):
+            # Every model declared itself text-only: say so rather than picking one
+            # that will reject an image.
+            return _suggest(role, ids, fallback)
+
+    priced = [m for m in catalog if m.cost_in is not None]
+    if priced and role != "vision":
+        priced.sort(key=lambda m: m.cost_in)
+        return priced[0].id if role in ("triage", "critic", "target_group") else priced[-1].id
+
+    return _suggest(role, ids, fallback)
+
+
 def _suggest(role: str, available: list[str], fallback: str) -> str:
     """Pick a sensible default for a role out of what the provider actually serves.
 
@@ -299,7 +449,8 @@ def _choose_models(config: dict, provider_id: str, provider: dict, api_key: str,
                    base_url: str | None) -> None:
     """Assign a model to each role, from the provider's own list where possible."""
     console.print("[dim]Asking the provider which models it serves...[/]", end=" ")
-    available = fetch_models(provider_id, api_key, base_url)
+    catalog = fetch_catalog(provider_id, api_key, base_url)
+    available = [m.id for m in catalog]
 
     if not available:
         console.print("[yellow]⚠ no list available[/]")
@@ -322,7 +473,7 @@ def _choose_models(config: dict, provider_id: str, provider: dict, api_key: str,
     console.print()
 
     for role, (env_key, _) in MODEL_ENV_KEYS.items():
-        config[env_key] = _suggest(role, available, provider["models"][role])
+        config[env_key] = _suggest_from_catalog(role, catalog, provider["models"][role])
 
     console.print(_model_table(config))
     console.print()
