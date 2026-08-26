@@ -95,6 +95,13 @@ def doctor_cmd(fix: bool):
     sys.exit(0 if success else 1)
 
 
+@main.command(name="test-llm")
+def test_llm_cmd():
+    """Make one real model call and report exactly where it breaks."""
+    from src.cli.llm_check import main as run_check
+    sys.exit(0 if run_check() else 1)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Start / Stop
 # ═══════════════════════════════════════════════════════════════════════════
