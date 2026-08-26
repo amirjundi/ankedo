@@ -58,6 +58,13 @@ ENV/
 # Distribution / packaging
 dist/
 build/
+# ...except the built dashboard, which ships. The agent runs on field machines with
+# no guaranteed Node toolchain, and a failed `npm run build` there means no dashboard
+# at all — three separate deployments hit that. Committing the bundle makes `git pull`
+# sufficient, the way OpenClaw and Hermes ship a prebuilt UI rather than building on
+# the target. Rebuild and commit it whenever frontend/src changes.
+!frontend/dist/
+!frontend/dist/**
 *.egg-info/
 *.egg
 .eggs/

@@ -357,14 +357,23 @@ def update_cmd(skip_deps: bool, force_deps: bool, fix: bool):
     # checkout serves nothing at all.
     dist_index = PROJECT_ROOT / "frontend" / "dist" / "index.html"
     frontend = PROJECT_ROOT / "frontend"
+    # frontend/dist is committed, so the pull usually brings the built bundle with it
+    # and nothing needs building here at all. A rebuild is only for a checkout whose
+    # source moved without the bundle — a developer mid-change, not an operator.
+    source_changed = any(
+        path.startswith(("frontend/src/", "frontend/index.html", "frontend/package"))
+        for path in changed
+    )
     if not frontend.exists():
         pass
+    elif dist_index.exists() and not source_changed:
+        console.print("[dim]Dashboard:[/] [green]✓[/] [dim]up to date[/]")
     elif not shutil.which("npm"):
-        console.print("[dim]Dashboard:[/] [yellow]⚠ npm not found — cannot build[/]")
-    elif dist_index.exists() and not touched("frontend/"):
-        console.print("[dim]Dashboard:[/] [green]✓[/] [dim]unchanged[/]")
+        console.print(
+            "[dim]Dashboard:[/] [yellow]⚠ needs a rebuild but npm is not installed[/]"
+        )
     else:
-        why = "not built yet" if not dist_index.exists() else "frontend changed"
+        why = "not built yet" if not dist_index.exists() else "source changed"
         console.print(f"[dim]Rebuilding the dashboard ({why})...[/]", end=" ")
         if not (frontend / "node_modules").exists():
             run(["npm", "install", "--no-audit", "--no-fund"],

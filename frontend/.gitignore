@@ -8,7 +8,12 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
-dist
+# dist is COMMITTED on purpose — see the note in the repo README.
+# The agent runs on field machines where a Node toolchain is not guaranteed and a
+# failed `npm run build` means no dashboard at all. Shipping the built bundle makes
+# `git pull` sufficient, the way OpenClaw and Hermes ship a prebuilt UI in their
+# distributed package. Rebuild and commit it when you change frontend/src.
+# dist
 dist-ssr
 *.local
 

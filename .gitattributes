@@ -1,0 +1,3 @@
+# The built dashboard ships as-is. No line-ending translation: it is an artefact,
+# not source, and a checkout must be byte-identical to what was built and tested.
+frontend/dist/** -text
