@@ -9,7 +9,7 @@ Usage:
     ankedo cases add    — Register a new case
     ankedo accounts add — Add a worker account
     ankedo configure    — Re-configure specific settings
-    ankedo update       — Pull latest code + update deps
+    ankedo update       — Pull latest code, rebuild what changed, then check health
 """
 import asyncio
 import os
@@ -268,53 +268,129 @@ def start_cmd(host: str | None, port: int | None, no_browser: bool):
 # ═══════════════════════════════════════════════════════════════════════════
 
 @main.command(name="update")
-@click.option("--skip-deps", is_flag=True, help="Skip dependency update")
-def update_cmd(skip_deps: bool):
-    """Pull latest code from GitHub, update dependencies, and migrate the database."""
+@click.option("--skip-deps", is_flag=True, help="Skip the dependency step entirely")
+@click.option("--force-deps", is_flag=True, help="Reinstall dependencies even if unchanged")
+@click.option("--fix", is_flag=True, help="Repair anything the health check finds broken")
+def update_cmd(skip_deps: bool, force_deps: bool, fix: bool):
+    """Pull the latest code and bring everything else back into step.
+
+    One command, because "update" that leaves the dashboard stale and the browser
+    missing is not an update — it is a git pull with extra steps. What actually needs
+    redoing is decided from what the pull changed, so a routine update that touches
+    only Python is quick.
+    """
     from rich.console import Console
     console = Console()
 
     console.print("\n[bold cyan]🔺 AnkEdo — Update[/]\n")
 
-    # Git pull
+    def run(args, **kwargs):
+        return subprocess.run(
+            args, cwd=str(kwargs.pop("cwd", PROJECT_ROOT)),
+            capture_output=True, text=True, **kwargs,
+        )
+
+    # ── Code ────────────────────────────────────────────────────────────────
+    before = run(["git", "rev-parse", "HEAD"]).stdout.strip()
+
     console.print("[dim]Pulling latest code...[/]", end=" ")
     try:
-        result = subprocess.run(
-            ["git", "pull", "origin", "master"],
-            cwd=str(PROJECT_ROOT), capture_output=True, text=True
-        )
-        if result.returncode == 0:
-            console.print(f"[green]✓[/] {result.stdout.strip()}")
-        else:
-            console.print(f"[red]✗[/] {result.stderr.strip()}")
-            sys.exit(1)
+        pulled = run(["git", "pull", "--ff-only", "origin", "master"])
     except FileNotFoundError:
         console.print("[red]✗ Git not found. Install git and try again.[/]")
         sys.exit(1)
 
-    # Update dependencies
-    if not skip_deps:
-        console.print("[dim]Updating dependencies...[/]", end=" ")
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-e", ".", "--quiet"],
-            cwd=str(PROJECT_ROOT), capture_output=True, text=True
+    if pulled.returncode != 0:
+        console.print("[red]✗[/]")
+        console.print(f"[dim]  {(pulled.stderr or pulled.stdout).strip()[:300]}[/]")
+        console.print(
+            "\n[dim]A fast-forward was refused — usually local commits or edited files.[/]\n"
+            "[dim]  git -C " + str(PROJECT_ROOT) + " status[/]\n"
         )
-        if result.returncode == 0:
-            console.print("[green]✓[/]")
-        else:
-            console.print(f"[yellow]⚠[/] {result.stderr.strip()[:100]}")
+        sys.exit(1)
 
-    # Re-init database (safe — only creates missing tables)
+    after = run(["git", "rev-parse", "HEAD"]).stdout.strip()
+    if before == after:
+        console.print("[green]✓[/] [dim]already up to date[/]")
+        changed: set[str] = set()
+    else:
+        console.print(f"[green]✓[/] [dim]{before[:7]} → {after[:7]}[/]")
+        changed = {
+            line.strip()
+            for line in run(["git", "diff", "--name-only", before, after]).stdout.splitlines()
+            if line.strip()
+        }
+
+    def touched(prefix: str) -> bool:
+        return any(path.startswith(prefix) for path in changed)
+
+    # ── Dependencies ────────────────────────────────────────────────────────
+    # Only when the manifest moved or the installed set is inconsistent. Three
+    # minutes of reinstalling what is already present, on every update, is the
+    # complaint that prompted this.
+    if skip_deps:
+        console.print("[dim]Dependencies:[/] [dim]skipped[/]")
+    else:
+        stale = force_deps or "pyproject.toml" in changed
+        if not stale:
+            stale = run([sys.executable, "-m", "pip", "check"]).returncode != 0
+        if not stale:
+            console.print("[dim]Dependencies:[/] [green]✓[/] [dim]unchanged[/]")
+        else:
+            console.print("[dim]Installing dependencies...[/]", end=" ")
+            installed = run([sys.executable, "-m", "pip", "install", "-e", ".", "--quiet"])
+            console.print("[green]✓[/]" if installed.returncode == 0
+                          else f"[yellow]⚠ {installed.stderr.strip()[:120]}[/]")
+
+    # ── Database ────────────────────────────────────────────────────────────
     console.print("[dim]Checking database schema...[/]", end=" ")
     try:
         from src.core.database import init_db
         asyncio.run(init_db())
         console.print("[green]✓[/]")
-    except Exception as e:
-        console.print(f"[yellow]⚠ {e}[/]")
+    except Exception as exc:
+        console.print(f"[yellow]⚠ {exc}[/]")
 
-    console.print("\n[green bold]✓ Update complete![/]")
-    console.print("[dim]Run 'ankedo start' to restart the agent.[/]\n")
+    # ── Dashboard ───────────────────────────────────────────────────────────
+    # dist/ is gitignored, so a pull never updates it: without this step an update
+    # that changed the frontend leaves the old bundle being served, and a fresh
+    # checkout serves nothing at all.
+    dist_index = PROJECT_ROOT / "frontend" / "dist" / "index.html"
+    frontend = PROJECT_ROOT / "frontend"
+    if not frontend.exists():
+        pass
+    elif not shutil.which("npm"):
+        console.print("[dim]Dashboard:[/] [yellow]⚠ npm not found — cannot build[/]")
+    elif dist_index.exists() and not touched("frontend/"):
+        console.print("[dim]Dashboard:[/] [green]✓[/] [dim]unchanged[/]")
+    else:
+        why = "not built yet" if not dist_index.exists() else "frontend changed"
+        console.print(f"[dim]Rebuilding the dashboard ({why})...[/]", end=" ")
+        if not (frontend / "node_modules").exists():
+            run(["npm", "install", "--no-audit", "--no-fund"],
+                cwd=frontend, shell=(os.name == "nt"))
+        built = run(["npm", "run", "build"], cwd=frontend, shell=(os.name == "nt"))
+        if built.returncode == 0 and dist_index.exists():
+            console.print("[green]✓[/]")
+        else:
+            console.print("[red]✗[/]")
+            output = ((built.stderr or "") + "\n" + (built.stdout or "")).strip()
+            for line in [ln for ln in output.splitlines() if ln.strip()][-8:]:
+                console.print(f"[dim]    {line[:150]}[/]")
+
+    # ── Health ──────────────────────────────────────────────────────────────
+    # Ending on the doctor is the point: an update that quietly left the browser
+    # missing looked successful right up until the first collection pass.
+    console.print()
+    from src.cli.health_check import run_doctor
+
+    healthy = run_doctor(fix=fix)
+
+    if healthy:
+        console.print("[green bold]✓ Update complete.[/] [dim]Run 'ankedo start'.[/]\n")
+    elif not fix:
+        console.print("[dim]Run 'ankedo update --fix' to repair what can be repaired.[/]\n")
+    sys.exit(0 if healthy else 1)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
