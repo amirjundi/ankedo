@@ -227,15 +227,13 @@ def _check_database() -> Check:
 async def _launch_probe(options: dict) -> None:
     """Start and immediately stop the browser the collector uses."""
     from camoufox.async_api import AsyncCamoufox
-    from playwright.async_api import async_playwright
 
-    playwright = await async_playwright().start()
-    try:
-        # AsyncCamoufox is an async context manager, not an awaitable.
-        async with AsyncCamoufox(playwright=playwright, **options):
-            pass
-    finally:
-        await playwright.stop()
+    # No playwright= argument: AsyncCamoufox(**launch_options) forwards them to
+    # AsyncNewBrowser(playwright, **options), so supplying one duplicates the
+    # positional — "AsyncNewBrowser() got multiple values for argument 'playwright'".
+    # It starts and stops its own Playwright.
+    async with AsyncCamoufox(**options):
+        pass
 
 
 def _check_playwright() -> Check:

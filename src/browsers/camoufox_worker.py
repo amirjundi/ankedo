@@ -10,7 +10,7 @@ from typing import Any
 
 import structlog
 from camoufox.async_api import AsyncCamoufox
-from playwright.async_api import Browser, BrowserContext, Page, async_playwright
+from playwright.async_api import Browser, BrowserContext, Page
 
 from src.core.settings import get_settings
 
@@ -38,7 +38,6 @@ class CamoufoxWorker:
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
         self._page: Page | None = None
-        self._playwright = None
         self._camoufox = None
 
     async def start(self) -> None:
@@ -65,11 +64,16 @@ class CamoufoxWorker:
             options["channel"] = self.settings.browser_channel
 
         try:
-            self._playwright = await async_playwright().start()
+            # Two things about this call, both learned the hard way on a real machine:
+            #
             # AsyncCamoufox is an async context manager, not an awaitable — `await
-            # AsyncCamoufox(...)` raises "object AsyncCamoufox can't be used in an
-            # 'await' expression". The manager is held so stop() can exit it.
-            self._camoufox = AsyncCamoufox(playwright=self._playwright, **options)
+            # AsyncCamoufox(...)` raises "can't be used in an 'await' expression". The
+            # manager is held so stop() can exit it.
+            #
+            # And no playwright= argument: AsyncCamoufox(**launch_options) forwards
+            # them to AsyncNewBrowser(playwright, **options), so passing one duplicates
+            # the positional. It starts and stops its own Playwright.
+            self._camoufox = AsyncCamoufox(**options)
             self._browser = await self._camoufox.__aenter__()
             self._context = (
                 self._browser.contexts[0]
@@ -93,7 +97,6 @@ class CamoufoxWorker:
         for closer in (
             getattr(self._context, "close", None),
             _exit_camoufox if self._camoufox is not None else None,
-            getattr(self._playwright, "stop", None),
         ):
             if closer is None:
                 continue
@@ -101,7 +104,7 @@ class CamoufoxWorker:
                 await closer()
             except Exception:  # noqa: BLE001 — cleanup must not mask the real error
                 pass
-        self._camoufox = self._context = self._browser = self._page = self._playwright = None
+        self._camoufox = self._context = self._browser = self._page = None
 
     async def stop(self) -> None:
         """Close the browser safely."""
@@ -114,8 +117,6 @@ class CamoufoxWorker:
             await self._camoufox.__aexit__(None, None, None)
         elif self._browser:
             await self._browser.close()
-        if self._playwright:
-            await self._playwright.stop()
         self._camoufox = self._browser = self._context = self._page = None
 
     async def pacing_delay(self) -> None:
