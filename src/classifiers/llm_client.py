@@ -186,13 +186,28 @@ class _OpenAIBackend:
         schema_hint: dict | None,
     ) -> list[dict]:
         system = system_instruction or ""
+        text = prompt
+
         if schema_hint is not None:
             system = (
                 f"{system}\n\nReply with JSON matching this schema exactly:\n"
                 f"{json.dumps(schema_hint)}"
             ).strip()
 
-        content: list[dict] = [{"type": "text", "text": prompt}]
+            # And again at the end of the user turn. A gateway can accept
+            # response_format and still pass the request to an upstream model that
+            # ignores it — this proxy returns 200 for json_schema and the model
+            # answers in prose anyway. Against a long analytical prompt a weak model
+            # reasons out loud and never emits the object, so the requirement has to
+            # be the last thing it reads, not a line buried in the system message.
+            text = (
+                f"{prompt}\n\n"
+                "Respond with ONLY a single JSON object matching the schema. "
+                "No explanation, no reasoning, no markdown fences, no text before "
+                "or after it. Begin your reply with { and end it with }."
+            )
+
+        content: list[dict] = [{"type": "text", "text": text}]
         for image in images or []:
             b64 = base64.b64encode(image).decode("ascii")
             content.append(
@@ -275,6 +290,26 @@ class _OpenAIBackend:
         try:
             parsed = schema.model_validate_json(_extract_json(text))
         except Exception as exc:
+            # A gateway can accept json_schema and still forward the request to a
+            # model that ignores it — this one returns 200 for strict mode and the
+            # model answers in prose. HTTP success is therefore not evidence that
+            # structured output happened, so the strict path retries once through
+            # the fallback, which puts the requirement in the prompt itself.
+            if strict:
+                log.info(
+                    "strict json_schema accepted but not honoured; retrying with a "
+                    "prompt-level instruction",
+                    model=model,
+                )
+                self._strict_unsupported.add(model)
+                return await self.complete(
+                    model=model,
+                    prompt=prompt,
+                    schema=schema,
+                    system_instruction=system_instruction,
+                    images=images,
+                )
+
             # Show what came back, trimmed. "did not match the schema" without the
             # payload leaves nothing to act on.
             preview = " ".join(text.split())[:200]

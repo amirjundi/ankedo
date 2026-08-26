@@ -111,10 +111,18 @@ async def run_llm_check() -> bool:
         try:
             result = await client.generate(
                 model=model,
-                prompt="Reply with the word OK.",
+                # Ask for the structure, not for the words. An earlier version said
+                # "Reply with the word OK", and a compliant model answered exactly
+                # that — plain text — which the check then reported as the model
+                # being incapable of structured output. It was following the prompt.
+                prompt=(
+                    "Return a JSON object with two fields: "
+                    '"answer" set to the string "OK", and "confident" set to true. '
+                    "Output only the JSON object."
+                ),
                 schema=_Probe,
                 purpose="llm-check",
-                prompt_version="check-v1",
+                prompt_version="check-v2",
             )
         except LLMError as exc:
             _line(False, f"structured call to {model} failed")

@@ -172,13 +172,33 @@ async def test_a_refusal_carries_its_token_cost(backend):
 
 
 async def test_a_schema_mismatch_carries_its_token_cost(backend):
-    be, _ = backend([_response('{"wrong": "shape"}', prompt_tokens=55)])
+    """Two responses: a gateway that accepts json_schema without honouring it gets
+    one retry through the prompt-level fallback before the error is raised."""
+    bad = '{"wrong": "shape"}'
+    be, calls = backend([_response(bad, prompt_tokens=55), _response(bad, prompt_tokens=55)])
 
     with pytest.raises(LLMError) as caught:
         await _complete(be)
 
     assert caught.value.prompt_tokens == 55
     assert "Verdict" in str(caught.value)
+    # The retry happened, and it carried the schema in the prompt rather than
+    # relying on response_format a second time.
+    assert [c["response_format"]["type"] for c in calls.calls] == ["json_schema", "json_object"]
+
+
+async def test_an_unhonoured_json_schema_is_retried_with_a_prompt_instruction(backend):
+    """HTTP 200 is not evidence that structured output happened. This proxy returns
+    200 for strict mode and the model answers in prose."""
+    good = json.dumps({"is_hate": True, "confidence": 0.9, "notes": None})
+    be, calls = backend([_response("Sure! Here is my analysis..."), _response(good)])
+
+    parsed, _, _ = await _complete(be)
+
+    assert parsed.is_hate is True
+    assert len(calls.calls) == 2
+    instruction = calls.calls[1]["messages"][-1]["content"][0]["text"]
+    assert "ONLY a single JSON object" in instruction
 
 
 # ── Backend selection ────────────────────────────────────────────────────────
