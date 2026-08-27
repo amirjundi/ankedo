@@ -65,3 +65,19 @@
 # EXPERT INPUT: confirm which groups are in scope for v1 (SRS §7 Q3), and whether
 # any group above should be split or merged. Better to cover three groups properly
 # than twelve badly — see specs/004 §5 volume guidance.
+
+# Declared because the workbook's REFERENCE sheet offers this slug and notes it "also
+# appears as a TARGET in the survey data" — so a curator following the sheet will use
+# it, and until now every row that did was rejected by pack verification with
+# "undeclared target group 'kurdish'". The vocabulary the sheet teaches and the
+# taxonomy the pack enforces have to be the same list.
+#
+# Kurds are the regional majority in Duhok and a minority nationally; the survey
+# records them as targets of the same loyalty and authenticity smears aimed at
+# everyone else here. Being a majority somewhere does not stop a smear being one.
+- slug: kurdish
+  display_name: {en: Kurds, ar: الكرد, ku: کورد}
+  aliases: [kurd, kurdish, كردي, الكرد, اكراد, الأكراد, کورد, kurdî]
+  self_reference_terms: [كردي, الكرد, کورد, کوردی, kurd, kurdî]
+  adjacent_groups: [faili-kurd, yazidi, kakai]
+  enabled: true

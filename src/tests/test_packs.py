@@ -132,6 +132,12 @@ def test_trope_without_negative_examples_is_rejected(tmp_path):
 # --------------------------------------------------------------------------- install
 
 
+def _declared_groups() -> list[dict]:
+    import yaml
+
+    return yaml.safe_load((PACK_DIR / "target_groups.yaml").read_text(encoding="utf-8"))
+
+
 async def test_install_loads_pack(installed):
     from sqlalchemy import func, select
 
@@ -140,7 +146,10 @@ async def test_install_loads_pack(installed):
 
     groups = (await installed.execute(select(func.count(TargetGroup.id)))).scalar_one()
     tropes = (await installed.execute(select(func.count(TropeDictionaryEntry.id)))).scalar_one()
-    assert groups == 8
+    # Counted from the file rather than hardcoded: the taxonomy is meant to grow, and
+    # a test that fails when a community is added is a test that discourages adding
+    # one. What matters is that every declared group arrives.
+    assert groups == len(_declared_groups())
     assert tropes == 1
 
 
@@ -152,7 +161,9 @@ async def test_install_is_idempotent(installed):
 
     await install_pack(installed, PACK_DIR)
     groups = (await installed.execute(select(func.count(TargetGroup.id)))).scalar_one()
-    assert groups == 8, "re-installing a pack must upgrade rows, not duplicate them"
+    assert groups == len(_declared_groups()), (
+        "re-installing a pack must upgrade rows, not duplicate them"
+    )
 
 
 # --------------------------------------------------------------------- group resolver
