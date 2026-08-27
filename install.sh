@@ -195,24 +195,39 @@ else
     fi
 fi
 
-# ── Step 4: Install Playwright Browsers ───────────────────────────────────
-step "Checking browser engine (Playwright)..."
-# `playwright install` is a no-op when the browser is present, but it still contacts
-# the download registry. Ask the doctor first — it launches a browser, which is the
-# only thing that actually answers whether one works.
+# ── Step 4: Fetch the browser engine ──────────────────────────────────────
+step "Checking browser engine (Camoufox)..."
+# Camoufox, not Chromium. This installed `playwright install chromium`, which was
+# wrong twice over: the agent launches AsyncCamoufox and never touches Chromium, so a
+# successful install left a browser nothing would use and a doctor check that still
+# failed. And Playwright's installer refuses any distro missing from its build
+# registry — which is what "does not support chromium on ubuntu26.04-x64" was.
+#
+# Camoufox downloads its own hardened Firefox build from its own releases, so it does
+# not consult that registry at all. The anti-detection is the reason it was chosen:
+# Playwright-driven Chromium is trivially fingerprinted, and a fingerprinted worker
+# account is a banned worker account.
+#
+# The doctor first — it launches a browser, which is the only thing that actually
+# answers whether one works.
 if python -m src.cli doctor 2>/dev/null | grep -q "Browser launches"; then
-    ok "Browser already installed"
-elif python -m playwright install chromium 2>/dev/null; then
-    ok "Chromium browser installed"
+    ok "Browser already working"
+elif python -m camoufox fetch 2>&1 | tail -2; then
+    if python -m src.cli doctor 2>/dev/null | grep -q "Browser launches"; then
+        ok "Camoufox installed and launching"
+    else
+        warn "Camoufox downloaded but will not launch"
+        info "Usually a missing system library. On Debian/Ubuntu:"
+        echo -e "  ${DIM}  sudo apt install -y libgtk-3-0 libx11-xcb1 libasound2t64${NC}"
+        echo -e "  ${DIM}  ankedo doctor            # names the missing piece${NC}"
+        info "Classification and the dashboard work without it."
+    fi
 else
-    # Playwright refuses to download for a distro its build registry does not know
-    # yet — Ubuntu 26.04 hits this. Collection needs a browser, so say what to try
-    # rather than leaving a bare "failed".
-    warn "Browser install failed"
+    warn "Camoufox download failed"
     info "Everything else is installed; collection needs a browser to run."
     info "Try, in order:"
-    echo -e "  ${DIM}  pip install -U playwright && playwright install chromium${NC}"
-    echo -e "  ${DIM}  sudo apt install chromium-browser   # then point Playwright at it${NC}"
+    echo -e "  ${DIM}  pip install -U camoufox && python -m camoufox fetch${NC}"
+    echo -e "  ${DIM}  ankedo doctor --fix      # runs the same repair with diagnostics${NC}"
     info "Classification and the dashboard work without it."
 fi
 

@@ -113,7 +113,11 @@ REPAIRS: dict[str, Repair] = {
             description="Install a system browser (needs root)",
             applies_to="Browser Engine",
             needs_human=True,
-            manual="sudo apt install chromium-browser",
+            # Firefox, not chromium-browser. Camoufox is a hardened Firefox fork and
+            # launches a Firefox binary; a Chromium path in BROWSER_EXECUTABLE_PATH
+            # cannot start and produces a confusing failure at collection time rather
+            # than an honest one here.
+            manual="sudo apt install firefox-esr   # or: firefox",
         ),
     ]
 }
@@ -175,10 +179,16 @@ def _make_env_file() -> tuple[bool, str]:
 def _adopt_system_browser() -> tuple[bool, str]:
     """Point the agent at a browser already installed, instead of asking for root.
 
-    The last resort for a distro Playwright has no build for. Writing the path is
-    something the agent may do; installing a package system-wide is not.
+    The last resort when Camoufox cannot fetch its own build — a distro its release
+    registry has nothing for, or a machine with no outbound access to it. Writing the
+    path is something the agent may do; installing a package system-wide is not.
     """
-    for name in ("chromium", "chromium-browser", "google-chrome", "google-chrome-stable"):
+    # Firefox builds only. This searched for chromium, chromium-browser, google-chrome
+    # and google-chrome-stable, then wrote whichever it found into
+    # BROWSER_EXECUTABLE_PATH — where Camoufox, which is a Firefox fork, would try to
+    # launch it as Firefox. The repair reported success and left collection broken in
+    # a way that pointed at the browser rather than at the repair.
+    for name in ("firefox", "firefox-esr", "firefox-bin"):
         found = shutil.which(name)
         if found:
             from src.cli.setup_wizard import _load_existing_env, _write_env
