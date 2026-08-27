@@ -31,7 +31,8 @@ that everything mentioning Yazidis is suspicious, which in a human-rights record
 false accusations against the people the system exists to protect. Several pairs here
 are the *same phrase* under different parents, benign in one and hateful in the other.
 
-Run:  python tools/seed_lexicon_rows.py docs/lexicon_data_entry_template.xlsx
+Add:    python tools/seed_lexicon_rows.py docs/lexicon_data_entry_template.xlsx
+Remove: python tools/seed_lexicon_rows.py docs/lexicon_data_entry_template.xlsx --clear
 """
 from __future__ import annotations
 
@@ -40,7 +41,11 @@ from pathlib import Path
 
 import openpyxl
 
-SEED = "seed — verify against Duhok field data before trusting"
+# Every row this script writes carries this prefix in its notes — or, on EXAMPLES
+# which has no notes column, in `why`. It is what --clear finds, and what tells a
+# curator which rows are a reconstruction rather than something the survey attested.
+MARKER = "seed —"
+SEED = f"{MARKER} verify against Duhok field data before trusting"
 
 # term, target_groups, language, category, severity, is_explicit, variants,
 # never_flag_when, is_regex, notes, added_by
@@ -260,7 +265,7 @@ EXAMPLES: list[tuple] = [
         f"{_U}101", "خبر: افتتاح كنيسة بعد ترميمها في سهل نينوى", "post",
         "خبر: افتتاح كنيسة بعد ترميمها في سهل نينوى", "christian-iraqi", "iraqi",
         "benign", "", 0,
-        "A news post about a church reopening. Nothing here is an attack; it is the "
+        f"{MARKER} " "A news post about a church reopening. Nothing here is an attack; it is the "
         "parent that gives the comments below their meaning.",
         "", "benign", "benign", "no",
     ),
@@ -268,7 +273,7 @@ EXAMPLES: list[tuple] = [
         f"{_U}101", "خبر: افتتاح كنيسة بعد ترميمها في سهل نينوى", "comment",
         "هذوله عملاء الغرب، شنو يريدون بالعراق", "christian-iraqi", "iraqi",
         "hate", "disloyalty", 6,
-        "Collective accusation of foreign allegiance, attached to a community named by "
+        f"{MARKER} " "Collective accusation of foreign allegiance, attached to a community named by "
         "the parent post. The insult is inherited rather than earned — no act is "
         "alleged, only membership.",
         "Foreign agents / loyalty smear", "hate", "hate", "no",
@@ -277,7 +282,7 @@ EXAMPLES: list[tuple] = [
         f"{_U}102", "منشور سياسي عن أداء الحكومة", "comment",
         "هذوله عملاء وما يفكرون بالبلد", "", "iraqi",
         "benign", "", 0,
-        "HARD CASE — nearly the same words as the row above, under a political post "
+        f"{MARKER} " "HARD CASE — nearly the same words as the row above, under a political post "
         "with no community named. Ordinary Iraqi political abuse. The trope requires a "
         "target group precisely so this is not flagged.",
         "", "benign", "benign", "yes",
@@ -288,21 +293,21 @@ EXAMPLES: list[tuple] = [
         f"{_U}103", "صور من احتفال ديني للصابئة المندائيين على النهر", "post",
         "صور من احتفال ديني للصابئة المندائيين على النهر", "sabian-mandaean", "iraqi",
         "benign", "", 0,
-        "A community photographing its own ceremony.", "", "benign", "benign", "no",
+        f"{MARKER} " "A community photographing its own ceremony.", "", "benign", "benign", "no",
     ),
     (
         f"{_U}103", "صور من احتفال ديني للصابئة المندائيين على النهر", "comment",
         "لا تشربون من هذا النهر بعد اليوم، هذوله نجس", "sabian-mandaean", "iraqi",
         "hate", "dehumanization", 8,
-        "Ritual-impurity framing aimed at people, followed immediately by an avoidance "
+        f"{MARKER} " "Ritual-impurity framing aimed at people, followed immediately by an avoidance "
         "instruction. This is the shape that precedes exclusion from shared resources.",
-        "Ritual impurity", "hate", "hate", "no",
+        f"{MARKER} " "Ritual impurity", "hate", "hate", "no",
     ),
     (
         f"{_U}104", "شكوى من تلوث مياه الشرب في الحي", "comment",
         "الماي وصلنا نجس، ما ينشرب أبدا", "", "iraqi",
         "benign", "", 0,
-        "HARD CASE — نجس in its ordinary sense, about water. No community is its "
+        f"{MARKER} " "HARD CASE — نجس in its ordinary sense, about water. No community is its "
         "object. A keyword list flags this; the trope does not.",
         "", "benign", "benign", "yes",
     ),
@@ -312,13 +317,13 @@ EXAMPLES: list[tuple] = [
         f"{_U}105", "مراسم إيزيدية في لالش بمناسبة العيد", "post",
         "مراسم إيزيدية في لالش بمناسبة العيد", "yazidi", "iraqi",
         "benign", "", 0,
-        "Neutral description of a religious ceremony.", "", "benign", "benign", "no",
+        f"{MARKER} " "Neutral description of a religious ceremony.", "", "benign", "benign", "no",
     ),
     (
         f"{_U}105", "مراسم إيزيدية في لالش بمناسبة العيد", "comment",
         "شوفوا هاي الطقوس المضحكة، يدورون حول حجر ويسمونها عبادة", "yazidi", "iraqi",
         "hate", "mockery", 5,
-        "Contains no slur at all — a keyword system clears it completely. The abuse is "
+        f"{MARKER} " "Contains no slur at all — a keyword system clears it completely. The abuse is "
         "in ridiculing the practice as such, and the target is fixed by the parent.",
         "Mockery of religious practice", "hate", "hate", "yes",
     ),
@@ -326,7 +331,7 @@ EXAMPLES: list[tuple] = [
         f"{_U}105", "مراسم إيزيدية في لالش بمناسبة العيد", "comment",
         "زرت لالش قبل سنة، مكان هادئ وناسه طيبين", "yazidi", "iraqi",
         "benign", "", 0,
-        "Same parent, same vocabulary of religious life, warm intent. Included so the "
+        f"{MARKER} " "Same parent, same vocabulary of religious life, warm intent. Included so the "
         "activation topics cannot be treated as sufficient on their own.",
         "", "benign", "benign", "no",
     ),
@@ -336,7 +341,7 @@ EXAMPLES: list[tuple] = [
         f"{_U}106", "منشور عن الإيزيديين وحقوقهم", "comment",
         "يسمونهم عبدة الشيطان وهذا افتراء، الإيزيدية دين قديم ومحترم", "yazidi", "iraqi",
         "benign", "counter_speech", 0,
-        "HARD CASE — carries the slur عبدة الشيطان verbatim, and is a rejection of it. "
+        f"{MARKER} " "HARD CASE — carries the slur عبدة الشيطان verbatim, and is a rejection of it. "
         "The never_flag_when rule `counter_speech` exists for exactly this row. "
         "Flagging it would put a defender in the evidence file.",
         "Devil-worship libel", "benign", "benign", "yes",
@@ -347,7 +352,7 @@ EXAMPLES: list[tuple] = [
         f"{_U}107", "ذكرى الإبادة في شنكال ٢٠١٤", "comment",
         "قصة الإبادة مبالغة سياسية، ما صار بشنكال ولا شي", "yazidi", "iraqi",
         "hate", "delegitimization", 9,
-        "Denial aimed at survivors on a commemoration post. Its function is to remove "
+        f"{MARKER} " "Denial aimed at survivors on a commemoration post. Its function is to remove "
         "the grounds for protection, which is why it scores above ordinary mockery.",
         "Genocide denial or minimisation", "hate", "hate", "no",
     ),
@@ -355,7 +360,7 @@ EXAMPLES: list[tuple] = [
         f"{_U}107", "ذكرى الإبادة في شنكال ٢٠١٤", "comment",
         "الباحثون مختلفون على أعداد الضحايا، وهذا نقاش أكاديمي مستمر", "yazidi", "iraqi",
         "benign", "", 0,
-        "HARD CASE — disputes figures on the same post without denying the event. "
+        f"{MARKER} " "HARD CASE — disputes figures on the same post without denying the event. "
         "Legitimate scholarship. The line is denial of the event, not debate about "
         "its measurement.",
         "", "benign", "benign", "yes",
@@ -366,15 +371,15 @@ EXAMPLES: list[tuple] = [
         f"{_U}108", "خبر عن مشاريع خدمية في برطلة", "comment",
         "الشبك مو عراقيين اصلا، جايين من ايران ولا الهم حق بالمنطقة", "shabak", "iraqi",
         "hate", "authenticity_denial", 7,
-        "Denies indigenous status in order to deny standing. Recorded because the "
+        f"{MARKER} " "Denies indigenous status in order to deny standing. Recorded because the "
         "Shabak had no trope covering them at all before this row.",
-        "Denial of indigenous status", "hate", "hate", "no",
+        f"{MARKER} " "Denial of indigenous status", "hate", "hate", "no",
     ),
     (
         f"{_U}108", "خبر عن مشاريع خدمية في برطلة", "comment",
         "برطلة مدينة جميلة واهلها من اطيب الناس", "shabak", "iraqi",
         "benign", "", 0,
-        "Ordinary praise under the same post.", "", "benign", "benign", "no",
+        f"{MARKER} " "Ordinary praise under the same post.", "", "benign", "benign", "no",
     ),
 ]
 
@@ -394,10 +399,43 @@ def _first_blank(ws) -> int:
     return row
 
 
+def clear_seed_rows(path: Path) -> int:
+    """Remove every row this script added, leaving real data untouched.
+
+    The seed rows exist so the sheet is not empty while the field data is still being
+    collected. They are placeholders for a curator's judgement, not a substitute for
+    it, and once the Duhok data arrives they should go — a reconstruction sitting
+    alongside attested terms is worse than no reconstruction, because after a week
+    nobody remembers which rows were which.
+
+    Identified by the SEED marker in the notes column, so a row that a curator has
+    edited and re-sourced is no longer a seed row and survives this.
+    """
+    wb = openpyxl.load_workbook(path)
+    removed = 0
+    for prefix in ("LEXICON", "TROPES", "EXAMPLES"):
+        ws = _sheet(wb, prefix)
+        # LEXICON's notes sit at column 10 with added_by at 11, so max_column is the
+        # wrong cell there — the same off-by-two that let the trope importer treat a
+        # boolean as a source string and import its own demonstration rows.
+        notes_col = {"LEXICON": 10, "TROPES": 13, "EXAMPLES": 10}[prefix]
+        for row in range(ws.max_row, 1, -1):
+            note = str(ws.cell(row=row, column=notes_col).value or "")
+            if note.startswith(MARKER):
+                ws.delete_rows(row)
+                removed += 1
+    wb.save(path)
+    print(f"removed {removed} seed rows from {path}")
+    return 0
+
+
 def main() -> int:
-    path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(
-        "docs/lexicon_data_entry_template.xlsx"
-    )
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    path = Path(args[0]) if args else Path("docs/lexicon_data_entry_template.xlsx")
+
+    if "--clear" in sys.argv:
+        return clear_seed_rows(path)
+
     wb = openpyxl.load_workbook(path)
 
     for prefix, rows in (("LEXICON", LEXICON), ("TROPES", TROPES), ("EXAMPLES", EXAMPLES)):
