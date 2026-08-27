@@ -407,6 +407,43 @@ class OrchestrationLoop:
                 suggested_actions=["Check worker accounts", "Check network", "Check logs"],
             )
 
+    async def _drain_outbox(self) -> None:
+        """Send what classification queued for the platform.
+
+        Runs every cycle rather than at submission time: the outbox exists precisely
+        because the connection is unreliable, so the sender must be something that
+        comes back around on its own, not something that happens once and gives up.
+
+        Silent when the platform is not configured. An agent can run perfectly well
+        with no platform attached — it classifies into its own database — and logging
+        an error every minute for a deployment choice would bury the real ones.
+        """
+        if not self.settings.ettok_base_url:
+            return
+
+        from src.ettok.client import AgentKeyRejected, EttokClient
+        from src.ettok.outbox import drain
+
+        try:
+            async with EttokClient() as client:
+                await drain(self.session, client)
+        except AgentKeyRejected:
+            # The drain stops itself and keeps the queue intact. Nothing here can fix
+            # a revoked key, so tell the operator instead of retrying into a wall.
+            log.error("Platform rejected the agent key — submissions are paused")
+            await self.dispatcher.dispatch(
+                title="Platform key rejected",
+                body=(
+                    "The platform refused the agent key, so verdicts are queued but "
+                    "not being sent. Nothing is lost. Check ETTOK_AGENT_KEY."
+                ),
+                severity="critical",
+            )
+        except Exception as exc:
+            # An unreachable platform is the expected case, not an exception worth
+            # taking the cycle down for. The items stay Pending and go again next time.
+            log.warning("Outbox drain failed", error=str(exc)[:200])
+
     async def run_cycle(self) -> None:
         """Run one full tick of the orchestration loop."""
         log.info("Starting orchestration cycle")
@@ -444,6 +481,10 @@ class OrchestrationLoop:
 
         # 8. Trend detection and escalation
         await self._check_trends()
+
+        # 8b. Ship finished verdicts. After classification, so work done this
+        # cycle goes out in this cycle rather than waiting for the next one.
+        await self._drain_outbox()
 
         # 9. Dead man's switch — silent failure is how monitoring tools die unnoticed
         await self._check_liveness()

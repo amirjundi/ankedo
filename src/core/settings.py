@@ -167,6 +167,21 @@ class AgentSettings(BaseSettings):
         default=None, description="Bearer key with the hate_speech_scan scope"
     )
     ettok_agent_id: str = Field(default="ankedo-local-01", description="Sent as X-Agent-Id")
+    # Off until the platform has a verdict endpoint that stores verdicts.
+    #
+    # `POST flagged-items/` exists and returns 200, but it is still the original
+    # prefilter: it has no columns for verdict, category, severity, confidence,
+    # rationale, decided_by, versions or committee_disagreement, so every one of
+    # those is silently dropped, and it re-runs its own classifier over each item —
+    # the duplication the ownership reversal removed. It also writes a scan log with
+    # posts_scanned set to the number of flagged items, which inverts hate density.
+    #
+    # A 200 that discards the payload is worse than a refusal, because nothing
+    # downstream can tell. So verdicts accumulate in the outbox and wait. That is what
+    # the outbox is for: the far end not being ready is exactly the case it holds work
+    # through. Turn this on when the platform confirms the §7 endpoint is live, and
+    # the backlog drains on the next cycle with nothing lost.
+    ettok_verdict_endpoint_ready: bool = Field(default=False)
     ettok_timeout_seconds: float = Field(default=30.0, gt=0)
     ettok_max_retries: int = Field(default=3, ge=0)
     # The contract caches the lexicon per run. Allowing a stale cache keeps the agent

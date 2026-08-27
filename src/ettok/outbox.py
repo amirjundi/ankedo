@@ -72,14 +72,36 @@ async def drain(session: AsyncSession, client: EttokClient, limit: int = 50) -> 
     """
     if _drain_lock.locked():
         log.debug("Drain already in progress, skipping")
-        return {"sent": 0, "failed": 0, "queued": 0, "skipped": True}
+        return {"sent": 0, "failed": 0, "queued": 0, "held": 0, "skipped": True}
 
     async with _drain_lock:
         return await _drain_locked(session, client, limit)
 
 
+def _held(item: OutboxItem) -> bool:
+    """True when the receiving endpoint cannot store this kind yet.
+
+    Held is not failed. Attempts are not spent, no error is recorded, and the row
+    stays Pending — it simply is not offered to a server that would accept it and
+    throw it away.
+    """
+    from src.core.settings import get_settings
+
+    if item.kind == OutboxKind.VERDICT:
+        return not get_settings().ettok_verdict_endpoint_ready
+    return False
+
+
 async def _drain_locked(session: AsyncSession, client: EttokClient, limit: int) -> dict:
-    items = await pending(session, limit)
+    candidates = await pending(session, limit)
+    items = [i for i in candidates if not _held(i)]
+    held = len(candidates) - len(items)
+    if held:
+        log.info(
+            "Holding outbox items — the platform cannot store them yet",
+            held=held,
+            reason="verdict endpoint not confirmed live",
+        )
     sent = failed = 0
 
     for item in items:
@@ -113,7 +135,7 @@ async def _drain_locked(session: AsyncSession, client: EttokClient, limit: int) 
     await session.commit()
     if sent or failed:
         log.info("Outbox drained", sent=sent, failed=failed, remaining=len(items) - sent)
-    return {"sent": sent, "failed": failed, "queued": len(items)}
+    return {"sent": sent, "failed": failed, "queued": len(items), "held": held}
 
 
 async def _send(client: EttokClient, item: OutboxItem) -> None:

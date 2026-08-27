@@ -20,6 +20,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.classifiers.committee.orchestrator import CommitteeOrchestrator
 from src.classifiers.context_bundle import build_bundle
 from src.core.queue_manager import QueueManager
+from src.ettok.queue_verdicts import (
+    is_submittable,
+    queue_verdicts,
+    verdict_for_comment,
+    verdict_for_post,
+)
 from src.core.settings import get_settings
 from src.models.comment import Comment
 from src.models.post import Post, QueueState as PostQueueState
@@ -79,6 +85,14 @@ class ClassificationWorker:
 
         needs_review = self._needs_review(post_result)
 
+        # Accumulated through the post and its comments, then queued once at the
+        # end so one post is one HTTP request rather than one per comment.
+        submissions: list[dict] = []
+        if is_submittable(post_result):
+            submissions.append(
+                verdict_for_post(post=post, bundle=post_bundle, result=post_result)
+            )
+
         # --- each comment, judged against the post ----------------------------
         comments = (
             await self.session.execute(select(Comment).where(Comment.post_id == post.id))
@@ -101,10 +115,19 @@ class ClassificationWorker:
             # after the queue gap, and equally invisible until something ran.
             comment.context_bundle_used = json.dumps(bundle.to_dict(), ensure_ascii=False)
 
+            if is_submittable(result):
+                submissions.append(
+                    verdict_for_comment(
+                        post=post, comment=comment, bundle=bundle, result=result
+                    )
+                )
+
             if result["hate_speech_flag"]:
                 flagged += 1
             if self._needs_review(result):
                 needs_review = True
+
+        await queue_verdicts(self.session, submissions)
 
         await self.queue_manager.record_post_statistics(
             post_id=post.id, comments_total=len(comments), comments_flagged=flagged
