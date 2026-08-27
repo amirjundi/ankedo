@@ -487,6 +487,14 @@ class OrchestrationLoop:
         classifier that rewrites its own rules.
         """
         from src.learning.learning_loop_worker import LearningLoopWorker
+        from src.learning.reviewer_gold import promote_reviewed_decisions
+
+        try:
+            # First, so the proposals below are judged against a gold set that
+            # includes what reviewers decided rather than only a static file.
+            await promote_reviewed_decisions(self.session)
+        except Exception as exc:
+            log.warning("Promoting reviewer decisions failed", error=str(exc)[:200])
 
         try:
             await LearningLoopWorker(self.session).run_cycle()
