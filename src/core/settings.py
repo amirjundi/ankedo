@@ -52,7 +52,16 @@ class AgentSettings(BaseSettings):
     # default timeout is tuned for a paid endpoint. A run against a free proxy timed
     # out mid-classification with the model still working.
     llm_timeout_seconds: float = Field(default=180.0, gt=0)
-    llm_max_retries: int = Field(default=3, ge=0)
+    # One, not three. Retries multiply against the fallback chain — four retries
+    # across four models is sixteen upstream calls for a single turn, and on a free
+    # tier that is enough to take the endpoint down. Measured: with the aggressive
+    # default the proxy fell over repeatedly; at one retry it served three passes in
+    # a row and stayed up. A retry storm against a rate-limited endpoint does not
+    # improve the odds, it removes them.
+    llm_max_retries: int = Field(default=1, ge=0)
+    # Pause before trying the next model. A rate limit needs a moment to clear;
+    # asking again immediately just spends another rejection.
+    fallback_delay_seconds: float = Field(default=2.0, ge=0)
 
     # Tried in order when the configured model is rate-limited or unavailable. On a
     # free tier a 429 is routine, not exceptional, and failing the item because one

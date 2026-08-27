@@ -32,6 +32,7 @@ The two are not equivalent, and the difference matters for this workload:
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import re
@@ -512,6 +513,11 @@ class LLMClient:
                     purpose=purpose, model=candidate,
                     error=str(exc).splitlines()[0][:120],
                 )
+                # Breathe. The endpoint that just refused is usually rate-limited
+                # rather than broken, and immediately hammering the next model on the
+                # same host is what turned a rate limit into an outage.
+                if self.settings.fallback_delay_seconds:
+                    await asyncio.sleep(self.settings.fallback_delay_seconds)
 
         if result is None:
             exc = failure or LLMError("no model produced a response")

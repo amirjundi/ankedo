@@ -81,6 +81,20 @@ class ChatDecision(BaseModel):
     message: str = Field(default="", description="What to say to the operator")
 
 
+class PlainReply(BaseModel):
+    """One field, so there is nothing to get wrong.
+
+    Asked for the seven-field decision object, a weak model routinely fills in the
+    action and leaves `message` empty — it answers the routing question and forgets
+    the talking. That is not a failed call: the model chose "reply" correctly, we
+    simply have no text to show, and the operator got "I am not sure what you need"
+    in response to "hello". Asking again for a single string is a question the same
+    model answers without difficulty.
+    """
+
+    message: str = Field(default="", description="The reply to the operator")
+
+
 @dataclass
 class ChatReply:
     text: str
@@ -177,7 +191,7 @@ class ChatAgent:
             # back to conversation rather than guessing at a near-match.
             if name != "reply":
                 log.info("Chat model named an unknown action", action=name)
-            text = decision.message or "I am not sure what you need."
+            text = decision.message or await self._plain_reply(history, message)
             await self._remember(text, from_agent=True)
             return ChatReply(text=text)
 
@@ -198,6 +212,35 @@ class ChatAgent:
             )
 
         return await self._execute(name, arguments)
+
+    async def _plain_reply(self, history: str, message: str) -> str:
+        """Second attempt at the conversational half, with the routing removed."""
+        try:
+            answer = await self.llm.generate(
+                model=self.settings.chat_agent_model,
+                prompt=(f"{history}\n\n" if history else "") + f"Operator says: {message}",
+                schema=PlainReply,
+                purpose="chat",
+                prompt_version=PROMPT_VERSION,
+                system_instruction=(
+                    "You are the admin assistant for AnkEdo, a hate-speech monitoring "
+                    "agent for Arabic and Kurdish social media. Answer the operator "
+                    "directly and briefly in `message`. Plain text, no markdown. "
+                    "Reply in the operator's language.\n\n"
+                    "You are answering from conversation alone. You have NOT looked "
+                    "anything up and you cannot see the database. If the operator "
+                    "asked for a count, a statistic, a date, or any record, say you "
+                    "could not retrieve it and ask them to repeat the question. Never "
+                    "state a figure. A number you invent here would be read as a "
+                    "measurement of real-world hate speech.\n\n"
+                    "Never claim to have performed an action, and never reveal API "
+                    "keys or tokens."
+                ),
+            )
+        except LLMError as exc:
+            log.warning("Plain reply failed", error=str(exc))
+            return "I could not put that into words — ask me again?"
+        return answer.message.strip() or "I am not sure what you need."
 
     async def confirm(self, pending: dict) -> ChatReply:
         """Run a mutation the operator has agreed to.
