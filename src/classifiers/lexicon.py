@@ -25,6 +25,16 @@ from src.models.lexicon_entry import LexiconEntry, TermScope
 log = structlog.get_logger()
 
 
+# Arabic proclitics: conjunctions و/ف, prepositions ب/ك/ل, and the article ال, in the
+# combinations that actually occur (و + ال, ل + ال contracting to لل, and so on).
+# Optional, so a bare term still matches.
+#
+# Deliberately not a general prefix-stripper. Allowing any leading letters would make
+# "عملاء" match inside unrelated words, and a false hit here is a named person in a
+# human-rights record. These are the closed set of clitics Arabic actually attaches.
+_CLITICS = r"(?:[وف]?(?:لل|بال|كال|وال|ال|[بكل])?)"
+
+
 class LexiconMatcher:
     """Matches normalized text against the lexicon."""
 
@@ -80,7 +90,19 @@ class LexiconMatcher:
             alternation = "|".join(
                 re.escape(s) for s in sorted(by_surface, key=len, reverse=True)
             )
-            pattern = re.compile(rf"(?<!\w)(?:{alternation})(?!\w)")
+            # Arabic writes its conjunctions, prepositions and article as prefixes on
+            # the following word, with no space. So "نجس" is a hit and "ونجس" — the
+            # same word with "and" — was not, because the boundary check saw the و as
+            # part of the word. Measured against the seeded pack: ونجس, بنجس, والكفار,
+            # وعملاء and للعملاء all missed while the bare forms matched. "و" alone is
+            # among the commonest characters in written Arabic, so this was not an edge
+            # case; it was a large share of ordinary sentences going unseen, and it
+            # would have shown up as the agent quietly under-reporting rather than as
+            # anything failing.
+            #
+            # The term itself is captured, so the lookup below still sees the bare
+            # surface rather than the clitic-prefixed string.
+            pattern = re.compile(rf"(?<!\w){_CLITICS}({alternation})(?!\w)")
 
         LexiconMatcher._cache = {"pattern": pattern, "by_surface": by_surface}
         LexiconMatcher._fingerprint = fingerprint
@@ -119,7 +141,9 @@ class LexiconMatcher:
         seen: set[str] = set()
 
         for match in pattern.finditer(normalized):
-            surface = match.group(0)
+            # group(1), not group(0): group 0 now includes any clitic prefix, and the
+            # index is keyed on the bare term.
+            surface = match.group(1)
             if surface in seen:
                 continue
             seen.add(surface)
