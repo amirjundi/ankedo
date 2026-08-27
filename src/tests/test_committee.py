@@ -243,3 +243,58 @@ async def test_unactivated_trope_is_marked_as_weak_signal(session):
 
     prompt = llm.prompts["specialist"]
     assert "NOT activated" in prompt
+
+
+# ------------------------------------------------------ never_flag_when, end to end
+
+
+async def test_counter_speech_withdraws_the_automatic_flag(session):
+    """The row the `counter_speech` rule exists for.
+
+    Someone quotes the devil-worship libel in order to reject it. The slur is present
+    verbatim, the specialist reads the intent correctly and returns the counter_speech
+    category — and before this, the verdict was still hate, so the person defending
+    the community went into the evidence file alongside the people attacking it.
+    """
+    llm = FakeLLM(
+        specialist=SpecialistDecision(
+            verdict=Verdict.HATE,
+            confidence=0.95,
+            category=Category.COUNTER_SPEECH,
+            target_group="yazidi",
+            severity=4,
+            relies_on_context=True,
+            rationale="quotes the libel",
+        )
+    )
+    result = await _orchestrator(session, llm).run(
+        _bundle(comment="يسمونهم " + PIOUS + " وهذا افتراء على دين قديم")
+    )
+
+    assert result["hate_speech_flag"] is False, "a defender was flagged"
+    assert result["verdict"] == "ambiguous", "cleared outright instead of sent to review"
+    assert result["trace"]["exemption"]["signal"] == "counter_speech"
+
+
+async def test_an_exemption_still_reaches_a_human(session):
+    """Not silently cleared. The model's own category is one of the signals, and the
+    text being judged is written by a stranger — marking it benign on that basis would
+    put the exemption one prompt injection away from being a bypass."""
+    llm = FakeLLM(
+        specialist=SpecialistDecision(
+            verdict=Verdict.HATE, confidence=0.99, category=Category.COUNTER_SPEECH,
+            target_group="yazidi", severity=4, relies_on_context=True, rationale="x",
+        )
+    )
+    result = await _orchestrator(session, llm).run(_bundle(comment="يسمونهم " + PIOUS))
+
+    settings = get_settings()
+    assert result["confidence"] <= settings.borderline_high, "stayed above the review band"
+
+
+async def test_an_ordinary_hateful_verdict_is_untouched(session):
+    """The exemption must not soften the normal path."""
+    result = await _orchestrator(session, FakeLLM()).run(_bundle())
+
+    assert result["hate_speech_flag"] is True
+    assert "exemption" not in result["trace"]

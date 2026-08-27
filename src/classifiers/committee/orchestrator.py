@@ -17,6 +17,7 @@ from src.classifiers.committee.critic_agent import CriticAgent
 from src.classifiers.committee.specialist_agent import SpecialistAgent
 from src.classifiers.committee.triage_agent import TriageAgent
 from src.classifiers.context_bundle import ContextBundle
+from src.classifiers.exemptions import ExemptionChecker
 from src.classifiers.lexicon import LexiconMatcher
 from src.classifiers.llm_client import LLMClient
 from src.classifiers.trope_engine import TropeEngine
@@ -36,6 +37,7 @@ class CommitteeOrchestrator:
         # unchanged rather than inventing a correction.
         self._temperature: float | None = None
         self.lexicon = LexiconMatcher(session)
+        self.exemptions = ExemptionChecker(session)
         self.tropes = TropeEngine(session)
         self.triage = TriageAgent(self.llm)
         self.specialist = SpecialistAgent(self.llm)
@@ -127,6 +129,36 @@ class CommitteeOrchestrator:
                 specialist=verdict,
                 critic=critic.get("suggested_verdict"),
             )
+            confidence = min(confidence, self.settings.borderline_high)
+
+        # --- never_flag_when ---------------------------------------------------
+        # The dictionary says these terms are excusable in certain contexts, and until
+        # now that was a line in a prompt the model could ignore. It is enforced here,
+        # in code, next to the other deterministic rules.
+        #
+        # An exemption withdraws the automatic flag; it does not clear the item. The
+        # verdict becomes ambiguous and lands in the review band, so a human sees the
+        # place where the dictionary and the context disagree. Marking it benign on
+        # the strength of the model's own category would put the exemption one prompt
+        # injection away from being a bypass — the text being judged is written by a
+        # stranger.
+        exemption = None
+        if verdict == "hate":
+            signals = await self.exemptions.detect_signals(
+                comment_text=bundle.comment_text,
+                target_groups=bundle.target_groups,
+                specialist=specialist,
+            )
+            exemption = ExemptionChecker.check(lexicon_hits, signals)
+
+        if exemption is not None:
+            log.info(
+                "Automatic flag withheld — never_flag_when applies",
+                signal=exemption.signal,
+                terms=exemption.terms,
+            )
+            trace["exemption"] = exemption.as_dict()
+            verdict = "ambiguous"
             confidence = min(confidence, self.settings.borderline_high)
 
         return _result(

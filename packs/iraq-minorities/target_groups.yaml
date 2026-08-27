@@ -9,56 +9,56 @@
 - slug: yazidi
   display_name: {en: Yazidi, ar: الإيزيديون, ku: ئێزیدی}
   aliases: [yezidi, ezidi, ezidi, ايزيدي, إيزيدي, يزيدي, الايزيديين, الإيزيديين, ئێزیدی, êzidî]
-  self_reference_terms: []      # EXPERT INPUT — gates reclaimed-speech handling
+  self_reference_terms: [ايزيدي, إيزيدي, الايزيدية, الإيزيديين, ايزيديه, ئێزیدی, ئێزیدییەکان, êzidî, ezidi, yezidi, داسني]
   adjacent_groups: [shabak, kakai]
   enabled: true
 
 - slug: christian-iraqi
   display_name: {en: Iraqi Christians (Assyrian/Chaldean/Syriac), ar: المسيحيون العراقيون, ku: مەسیحی}
   aliases: [assyrian, chaldean, syriac, آشوري, كلداني, سرياني, المسيحيين, مسيحي, مەسیحی]
-  self_reference_terms: []
+  self_reference_terms: [مسيحي, المسيحيين, مسيحية, اشوري, آشوري, الاشوريين, كلداني, الكلدان, سرياني, السريان, سورايا, مەسیحی, assyrian, chaldean, suraya]
   adjacent_groups: []
   enabled: true
 
 - slug: shabak
   display_name: {en: Shabak, ar: الشبك, ku: شەبەک}
   aliases: [shabak, الشبك, شبك, شەبەک]
-  self_reference_terms: []
+  self_reference_terms: [شبكي, الشبك, شبك, الشبكية, shabak]
   adjacent_groups: [yazidi, kakai]
   enabled: true
 
 - slug: kakai
   display_name: {en: Kaka'i (Yarsan), ar: الكاكائية, ku: کاکەیی}
   aliases: [kakai, "kaka'i", yarsan, ahl-e haqq, الكاكائية, كاكائي, يارسان, کاکەیی]
-  self_reference_terms: []
+  self_reference_terms: [كاكائي, الكاكائية, كاكەیی, يارسان, ياراسان, kakai, yarsan]
   adjacent_groups: [yazidi, shabak]
   enabled: true
 
 - slug: sabian-mandaean
   display_name: {en: Sabian-Mandaean, ar: الصابئة المندائيون, ku: ساوی}
   aliases: [mandaean, sabian, صابئي, الصابئة, المندائيين, مندائي]
-  self_reference_terms: []
+  self_reference_terms: [صابئي, الصابئة, صابئة, مندائي, المندائيين, مندائية, mandaean, sabian]
   adjacent_groups: []
   enabled: true
 
 - slug: turkmen-iraqi
   display_name: {en: Iraqi Turkmen, ar: التركمان العراقيون, ku: تورکمان}
   aliases: [turkmen, turkoman, تركماني, التركمان, تورکمان]
-  self_reference_terms: []
+  self_reference_terms: [تركماني, التركمان, تركمان, türkmen, turkmen]
   adjacent_groups: []
   enabled: true
 
 - slug: faili-kurd
   display_name: {en: Faili Kurds, ar: الكرد الفيليون, ku: کوردی فەیلی}
   aliases: [faili, feyli, failee, فيلي, الفيلية, الكرد الفيليين, فەیلی]
-  self_reference_terms: []
+  self_reference_terms: [فيلي, الفيلية, الفيليين, كردي فيلي, فەیلی, faili, feyli]
   adjacent_groups: []
   enabled: true
 
 - slug: bahai
   display_name: {en: Baha'i, ar: البهائيون, ku: بەهایی}
   aliases: [bahai, "baha'i", bahaie, بهائي, البهائيين, بەهایی]
-  self_reference_terms: []
+  self_reference_terms: [بهائي, البهائيين, بهائية, bahai, bahá'í]
   adjacent_groups: []
   enabled: true
 
