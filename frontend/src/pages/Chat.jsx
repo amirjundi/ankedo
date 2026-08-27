@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import ChatPanel from '../components/ChatPanel';
-import { api, ApiError, getToken, setToken, hasToken } from '../api';
+import { api, ApiError, setToken } from '../api';
 import ConfirmDialog from '../components/ConfirmDialog';
 import './Chat.css';
 
@@ -23,7 +23,11 @@ const Chat = () => {
   const [pending, setPending] = useState(null);
   // Nothing else in the dashboard authenticates yet, so this page carries the only
   // way to supply the admin token. Shown when there is none, or one was rejected.
-  const [needsToken, setNeedsToken] = useState(!hasToken());
+  // Not "is a token stored", but "has the agent actually refused". An agent running
+  // on the operator's own machine no longer requires one, so opening with a password
+  // prompt asked them for a credential nothing was going to check — and there was no
+  // obvious way past it to find that out.
+  const [needsToken, setNeedsToken] = useState(false);
   const [tokenDraft, setTokenDraft] = useState('');
 
   const append = useCallback((msg) => {

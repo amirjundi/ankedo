@@ -24,6 +24,32 @@ log = structlog.get_logger()
 _scheme = HTTPBearer(auto_error=False)
 
 
+_LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+
+# Set by every reverse proxy and tunnel worth the name. Their presence means the
+# request reached us through something, so the socket's peer address is the proxy and
+# tells us nothing about who is really asking.
+#
+# This matters specifically here: a Cloudflare tunnel runs its daemon on the same
+# machine, so a request from the public internet arrives from 127.0.0.1. Trusting the
+# peer address alone would publish the dashboard to anyone with the URL while looking
+# like a local connection.
+_FORWARDED_HEADERS = (
+    "cf-connecting-ip",
+    "x-forwarded-for",
+    "x-real-ip",
+    "forwarded",
+)
+
+
+def _is_local(request: Request) -> bool:
+    """True only for a request that came straight from this machine."""
+    if any(h in request.headers for h in _FORWARDED_HEADERS):
+        return False
+    client = request.client.host if request.client else None
+    return client in _LOOPBACK
+
+
 async def require_admin(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_scheme),
@@ -38,11 +64,28 @@ async def require_admin(
     expected = settings.admin_api_token
 
     if not expected:
+        # No token configured. On the operator's own machine that should not be a
+        # wall: they are already sitting at the computer, and a password prompt
+        # between someone and software running on their own laptop protects nobody.
+        # Exposed to a network it is the only thing standing between a stranger and a
+        # database of verdicts naming people who are already targets.
+        #
+        # So the answer depends on where the request came from, not on configuration.
+        if _is_local(request):
+            log.warning(
+                "Serving without authentication to a local client — set "
+                "ADMIN_API_TOKEN before exposing this agent to a network "
+                "(`ankedo token`)",
+                path=request.url.path,
+            )
+            return "admin"
+
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
-                "ADMIN_API_TOKEN is not set. Run `ankedo token` on the agent "
-                "machine to generate one, then restart the agent."
+                "This agent is reachable from the network and has no "
+                "ADMIN_API_TOKEN. Run `ankedo token` on the agent machine, then "
+                "restart it."
             ),
         )
 
