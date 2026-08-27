@@ -179,7 +179,11 @@ def read_tropes(ws, result: Result) -> None:
     for index, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
         if not row or not _text(row[0]):
             continue
-        source = _text(row[10]) if len(row) > 10 else ""
+        # Index 12, not 10. When requires_target_group and negation_cancels were
+        # inserted at K and L, notes moved to M and this was not updated — so the
+        # skip test was reading a boolean, never matched "EXAMPLE", and the four
+        # demonstration tropes in the template were imported as live rules.
+        source = _text(row[12]) if len(row) > 12 else ""
         if _is_example(source):
             result.skipped += 1
             continue
@@ -217,6 +221,26 @@ def read_tropes(ws, result: Result) -> None:
         severity = _severity(row[8], where, result)
         is_visual = _text(row[9] if len(row) > 9 else "").lower() == "yes"
 
+        # Read, not assumed. Both were hardcoded True below, which made the two
+        # columns decorative: a curator could set them either way and nothing changed.
+        #
+        # Defaults when the cell is blank are the safe ones. requires_target_group
+        # defaults True because a trope that fires without a target present matches
+        # ordinary speech — "الخونة" is everyday political argument in Iraq.
+        # negation_cancels defaults True because "they are not devil-worshippers" is a
+        # denial of the libel, and flagging the person rejecting it puts a defender in
+        # the evidence file.
+        def _flag(index: int, default: bool) -> bool:
+            raw = _text(row[index] if len(row) > index else "").lower()
+            if raw in ("yes", "true", "1", "نعم"):
+                return True
+            if raw in ("no", "false", "0", "لا"):
+                return False
+            return default
+
+        requires_target_group = _flag(10, True)
+        negation_cancels = _flag(11, True)
+
         if is_visual and surface_forms:
             result.warnings.append(
                 f"{where}: marked visual but has surface_forms — text matching will "
@@ -228,9 +252,9 @@ def read_tropes(ws, result: Result) -> None:
             "target_groups": groups,
             "surface_forms": [{"text": f, "register": "unspecified"} for f in surface_forms],
             "activation": {
-                "requires_target_group": True,
+                "requires_target_group": requires_target_group,
                 "post_topic_any": topics,
-                "negation_cancels": True,
+                "negation_cancels": negation_cancels,
             },
             "implicature": _text(row[1]),
             "severity": severity,

@@ -1,0 +1,69 @@
+# AnkEdo — systemd unit
+#
+# Install:
+#   sudo cp deploy/ankedo.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ankedo
+#   journalctl -u ankedo -f
+#
+# Edit User, WorkingDirectory and ExecStart if the agent is not installed at
+# /home/operator/AnkEdo. The paths are deliberately absolute: systemd does not run a
+# login shell, so nothing here may depend on a profile, a PATH entry, or an activated
+# virtualenv. `ankedo` on PATH is a symlink created by install.sh for interactive use;
+# this calls the venv's python directly, which works whether or not that symlink
+# exists.
+#
+# This unit runs the agent on the machine that has a browser and a residential
+# connection. It is not for the VPS: scanning social media from a datacenter address
+# is what gets worker accounts banned, and avoiding that is most of why the browser
+# stack looks the way it does.
+
+[Unit]
+Description=AnkEdo hate-speech monitoring agent
+Documentation=https://github.com/amirjundi/ankedo
+# Wants, not Requires: the agent must still come up and serve its dashboard when the
+# network is down. Collection fails, verdicts queue in the outbox, and the operator
+# can see that this is what is happening. Refusing to start would tell them nothing.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=operator
+Group=operator
+WorkingDirectory=/home/operator/AnkEdo
+
+# The full path to the venv's interpreter. `ankedo start` serves the dashboard and
+# runs the orchestration loop in the same process.
+ExecStart=/home/operator/AnkEdo/venv/bin/python -m src.cli start
+
+Restart=on-failure
+RestartSec=10
+
+# Ten restarts in five minutes means it is failing at startup — a missing .env, a
+# database it cannot open, a port already bound. Restarting forever would hide that
+# in a log nobody reads; stopping makes `systemctl status` say so plainly.
+StartLimitBurst=10
+StartLimitIntervalSec=300
+
+# Give the browser and any in-flight classification time to finish. A kill during
+# classification is survivable — the queue releases the item on restart — but a clean
+# exit avoids the work being redone.
+TimeoutStopSec=30
+KillSignal=SIGINT
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ankedo
+
+# The agent holds evidence about people who are already targets of violence, so it
+# gets no more of the filesystem than it needs.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+# ...except its own directory, which holds the database, screenshots and .env.
+ReadWritePaths=/home/operator/AnkEdo
+
+[Install]
+WantedBy=multi-user.target
