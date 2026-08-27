@@ -245,18 +245,46 @@ class EttokClient:
             "POST", "flagged-items/", json={"items": items}, request_id=request_id
         )
 
-    async def post_lexicon_gaps(self, gaps: list[dict]) -> dict:
+    async def post_verdicts(self, items: list[dict], *, request_id: str | None = None) -> dict:
+        """Submit §7 verdicts — the agent's decision, with its reasoning intact.
+
+        Deliberately not `flagged-items/`. That path is the original prefilter: it has
+        no columns for verdict, category, severity, confidence, rationale, decided_by,
+        versions or committee_disagreement, so it accepts them, drops them, and
+        re-classifies each item with its own model — returning 200 either way. Reusing
+        it would have meant that on the day the platform switched semantics, both
+        halves would briefly disagree about what the same JSON envelope meant, with no
+        error to show for it. A separate path makes that a routing change instead, and
+        leaves a rollback.
+
+        Unlike the prefilter, this endpoint validates and rejects per item with a
+        reason, so a bad verdict comes back named rather than vanishing into a 200.
+        """
+        return await self._request(
+            "POST", "verdicts/", json={"items": items}, request_id=request_id
+        )
+
+    async def post_lexicon_gaps(self, gaps: list[dict], *, request_id: str | None = None) -> dict:
         """Propose terms the agent saw but the dictionary does not have (§3).
 
         The mechanism by which the agent contributes without authority to rewrite its
         own rules: it proposes, a curator accepts. Blocked upstream until
         LexiconGap.report becomes nullable — a proposal has no report to hang off.
         """
-        return await self._request("POST", "lexicon-gaps/", json={"gaps": gaps})
+        return await self._request(
+            "POST", "lexicon-gaps/", json={"gaps": gaps}, request_id=request_id
+        )
 
-    async def post_scan_log(self, payload: dict) -> dict:
-        """Submit run statistics."""
-        return await self._request("POST", "scan-log/", json=payload)
+    async def post_scan_log(self, payload: dict, *, request_id: str | None = None) -> dict:
+        """Submit run statistics.
+
+        Idempotent by key. Without one, a scan log that timed out and was retried is
+        written twice, and every density figure computed from it is wrong — the
+        denominator doubles while the numerator does not.
+        """
+        return await self._request(
+            "POST", "scan-log/", json=payload, request_id=request_id
+        )
 
     async def post_cookies(self, payload: dict) -> dict:
         """Persist refreshed session cookies."""

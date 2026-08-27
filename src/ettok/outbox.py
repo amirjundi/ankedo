@@ -140,15 +140,27 @@ async def _drain_locked(session: AsyncSession, client: EttokClient, limit: int) 
 
 async def _send(client: EttokClient, item: OutboxItem) -> None:
     if item.kind == OutboxKind.VERDICT:
-        await client.post_flagged_items(
+        response = await client.post_verdicts(
             item.payload.get("items", []), request_id=item.request_id
         )
     elif item.kind == OutboxKind.SCAN_LOG:
-        await client.post_scan_log(item.payload)
+        response = await client.post_scan_log(item.payload, request_id=item.request_id)
     elif item.kind == OutboxKind.LEXICON_GAP:
-        await client.post_lexicon_gaps(item.payload.get("gaps", []))
+        response = await client.post_lexicon_gaps(
+            item.payload.get("gaps", []), request_id=item.request_id
+        )
     else:
         raise EttokError(f"unknown outbox kind {item.kind}")
+
+    # A 2xx with rejections inside it is not a success. The platform validates per
+    # item and names what it refused, which is the whole point of the new endpoint —
+    # marking the row Sent would discard those verdicts as surely as the prefilter did.
+    rejected = (response or {}).get("rejected") or []
+    if rejected:
+        raise EttokError(
+            f"{len(rejected)} of {len(item.payload.get('items', []))} rejected: "
+            f"{str(rejected)[:400]}"
+        )
 
 
 async def depth(session: AsyncSession) -> dict:

@@ -108,16 +108,19 @@ class RecordingClient:
     def __init__(self):
         self.verdict_calls = 0
         self.gap_calls = 0
+        self.rejected: list[dict] = []
+        self.last_request_id: str | None = None
 
-    async def post_flagged_items(self, items, *, request_id=None):
+    async def post_verdicts(self, items, *, request_id=None):
         self.verdict_calls += 1
-        return {"accepted": len(items)}
+        self.last_request_id = request_id
+        return {"accepted": len(items), "rejected": self.rejected}
 
-    async def post_lexicon_gaps(self, gaps):
+    async def post_lexicon_gaps(self, gaps, *, request_id=None):
         self.gap_calls += 1
         return {"accepted": len(gaps)}
 
-    async def post_scan_log(self, payload):
+    async def post_scan_log(self, payload, *, request_id=None):
         return {}
 
 
@@ -189,3 +192,39 @@ async def test_other_kinds_are_unaffected_by_the_verdict_gate(session, monkeypat
 
     assert client.gap_calls == 1
     assert result["sent"] == 1
+
+
+async def test_a_rejected_verdict_is_not_marked_sent(session, monkeypatch):
+    """The new endpoint validates and names what it refused. A 2xx carrying a
+    `rejected` array is not a success — marking the row Sent would discard those
+    verdicts exactly as the prefilter did, which is what the endpoint exists to stop."""
+    monkeypatch.setenv("ETTOK_VERDICT_ENDPOINT_READY", "true")
+    get_settings.cache_clear()
+
+    await queue_verdicts(session, [{"content": "x"}])
+    await session.commit()
+
+    client = RecordingClient()
+    client.rejected = [{"index": 0, "reason": "missing target_group"}]
+    result = await drain(session, client)
+
+    assert result["sent"] == 0
+    row = (await session.execute(select(OutboxItem))).scalar_one()
+    assert row.status == OutboxStatus.PENDING
+    assert "missing target_group" in (row.last_error or "")
+
+
+async def test_the_idempotency_key_is_the_rows_request_id(session, monkeypatch):
+    """Stable across retries — that is what makes a retry after a lost response safe
+    now that the platform honours the header."""
+    monkeypatch.setenv("ETTOK_VERDICT_ENDPOINT_READY", "true")
+    get_settings.cache_clear()
+
+    await queue_verdicts(session, [{"content": "x"}])
+    await session.commit()
+    row = (await session.execute(select(OutboxItem))).scalar_one()
+
+    client = RecordingClient()
+    await drain(session, client)
+
+    assert client.last_request_id == row.request_id

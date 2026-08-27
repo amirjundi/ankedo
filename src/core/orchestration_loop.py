@@ -431,18 +431,67 @@ class OrchestrationLoop:
             # The drain stops itself and keeps the queue intact. Nothing here can fix
             # a revoked key, so tell the operator instead of retrying into a wall.
             log.error("Platform rejected the agent key — submissions are paused")
-            await self.dispatcher.dispatch(
-                title="Platform key rejected",
-                body=(
-                    "The platform refused the agent key, so verdicts are queued but "
-                    "not being sent. Nothing is lost. Check ETTOK_AGENT_KEY."
+            await self.dispatcher.send(
+                type_="ToolBroken",
+                context={"tool": "platform", "error": "agent key rejected"},
+                question=(
+                    "Submissions are paused: the platform refused the agent key. "
+                    "Work is queued and nothing is lost."
                 ),
-                severity="critical",
+                urgency="Critical",
+                suggested_actions=[
+                    "Check ETTOK_AGENT_KEY in .env",
+                    "Regenerate the key on the platform — only its hash is stored, "
+                    "so a lost key cannot be recovered",
+                ],
             )
         except Exception as exc:
             # An unreachable platform is the expected case, not an exception worth
             # taking the cycle down for. The items stay Pending and go again next time.
             log.warning("Outbox drain failed", error=str(exc)[:200])
+
+    async def _queue_scan_log(self) -> None:
+        """Record what this pass looked at, including what it could not reach.
+
+        The denominator lives only here. The platform never learns what was read and
+        cleared, only what was flagged, so without `comments_scanned` hate density is
+        uncomputable — a run flagging 4 items out of 8,420 comments reads as 100%
+        rather than 0.05%. `coverage` carries what was *not* seen, because a report
+        that cannot state its own gaps invites the objection that absence of evidence
+        was treated as evidence of absence.
+        """
+        stats = self.last_collection
+        if stats is None or not self.settings.ettok_base_url:
+            return
+
+        from src.ettok.outbox import enqueue
+        from src.ettok.submit import build_scan_log
+        from src.models.outbox import OutboxKind
+
+        platforms = [p for p in (stats.per_platform or {}) if not p.startswith("_")]
+        payload = build_scan_log(
+            stats,
+            duration_seconds=int(getattr(stats, "duration_seconds", 0) or 0),
+            platforms=platforms,
+        )
+        await enqueue(self.session, OutboxKind.SCAN_LOG, payload)
+        await self.session.commit()
+
+    async def _run_learning(self) -> None:
+        """Turn reviewed decisions into proposals for the curator.
+
+        The worker existed and was never instantiated, so the one path by which human
+        review could influence the agent's rules was open at both ends and connected
+        in the middle to nothing. It proposes only — writing the local lexicon is
+        refused inside the worker — so the failure mode here is a wasted cycle, not a
+        classifier that rewrites its own rules.
+        """
+        from src.learning.learning_loop_worker import LearningLoopWorker
+
+        try:
+            await LearningLoopWorker(self.session).run_cycle()
+        except Exception as exc:
+            log.warning("Learning cycle failed", error=str(exc)[:200])
 
     async def run_cycle(self) -> None:
         """Run one full tick of the orchestration loop."""
@@ -481,6 +530,12 @@ class OrchestrationLoop:
 
         # 8. Trend detection and escalation
         await self._check_trends()
+
+        # 8a. Record the pass, denominators included, before anything is sent.
+        await self._queue_scan_log()
+
+        # 8a2. Propose lexicon and trope changes from what reviewers decided.
+        await self._run_learning()
 
         # 8b. Ship finished verdicts. After classification, so work done this
         # cycle goes out in this cycle rather than waiting for the next one.
