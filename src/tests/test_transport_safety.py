@@ -25,6 +25,11 @@ def platform_env(monkeypatch):
     monkeypatch.setenv("ETTOK_BASE_URL", "https://example.test/api/hermes/")
     monkeypatch.setenv("ETTOK_AGENT_KEY", TOKEN)
     monkeypatch.setenv("ETTOK_MAX_RETRIES", "2")
+    # These tests exercise transport mechanics — retries, idempotency, the failure
+    # ladder — using VERDICT as the carrier. The verdict gate is a separate concern
+    # with its own tests in test_outbox_wiring.py; held items would never reach the
+    # transport under test.
+    monkeypatch.setenv("ETTOK_VERDICT_ENDPOINT_READY", "true")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
