@@ -972,6 +972,8 @@ def run_setup(non_interactive: bool = False, reconfigure: bool = False):
 
         if not config.get("SECRET_KEY"):
             config["SECRET_KEY"] = secrets.token_hex(32)
+        if not config.get("ADMIN_API_TOKEN"):
+            config["ADMIN_API_TOKEN"] = secrets.token_urlsafe(24)
 
         _write_env(config)
         console.print("[green]✓ Configuration saved from environment variables.[/]")
@@ -1168,6 +1170,15 @@ def run_setup(non_interactive: bool = False, reconfigure: bool = False):
 
     if not config.get("SECRET_KEY"):
         config["SECRET_KEY"] = secrets.token_hex(32)
+
+    # The dashboard and every API route require this, and nothing created it. It was
+    # absent from the wizard, from .env.example, from the docs and from the README —
+    # present only in the settings model and the auth check that demands it. So a
+    # fresh install brought up a dashboard that refused every request with "run
+    # `ankedo setup`", and running setup did not create it either. The instruction and
+    # the fix pointed at each other.
+    if not config.get("ADMIN_API_TOKEN"):
+        config["ADMIN_API_TOKEN"] = secrets.token_urlsafe(24)
 
     # Summary table
     summary = Table(

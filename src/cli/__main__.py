@@ -102,6 +102,47 @@ def test_llm_cmd():
     sys.exit(0 if run_check() else 1)
 
 
+@main.command(name="token")
+@click.option("--new", "rotate", is_flag=True, help="Replace the existing token.")
+def token_cmd(rotate: bool):
+    """Show the dashboard's admin token, creating one if there is none.
+
+    The dashboard asks for this the first time you open it. It is the only thing
+    standing between anyone who can reach the port and a database of verdicts about
+    named people, so the agent refuses every request until it exists rather than
+    serving that unauthenticated.
+    """
+    import secrets
+
+    from rich.console import Console
+
+    from src.cli.setup_wizard import _load_existing_env, _write_env
+    from src.core.settings import get_settings
+
+    console = Console()
+
+    config = _load_existing_env()
+    if not config:
+        console.print("[red]No .env found.[/] Run [cyan]ankedo setup[/] first.")
+        sys.exit(1)
+
+    existing = config.get("ADMIN_API_TOKEN")
+    if existing and not rotate:
+        console.print(f"\n  [bold]{existing}[/]\n")
+        console.print("[dim]Paste this into the dashboard when it asks.[/]")
+        console.print("[dim]Rotate it with: ankedo token --new[/]")
+        return
+
+    config["ADMIN_API_TOKEN"] = secrets.token_urlsafe(24)
+    _write_env(config)
+    get_settings.cache_clear()
+
+    console.print(f"\n  [bold green]{config['ADMIN_API_TOKEN']}[/]\n")
+    if existing:
+        console.print("[yellow]Rotated.[/] Every signed-in dashboard must paste the new one.")
+    console.print("[dim]Restart the agent for it to take effect.[/]")
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Start / Stop
 # ═══════════════════════════════════════════════════════════════════════════

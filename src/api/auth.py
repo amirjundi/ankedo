@@ -40,7 +40,10 @@ async def require_admin(
     if not expected:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="ADMIN_API_TOKEN is not configured — run `ankedo setup`.",
+            detail=(
+                "ADMIN_API_TOKEN is not set. Run `ankedo token` on the agent "
+                "machine to generate one, then restart the agent."
+            ),
         )
 
     supplied = credentials.credentials if credentials else None
