@@ -77,6 +77,18 @@ export const api = {
   repeatOffenders: () => request('/api/reports/repeat-offenders'),
   pageStats: () => request('/api/reports/stats/pages'),
 
+  cases: () => request('/api/cases'),
+  targetGroups: () => request('/api/target-groups'),
+  createCase: (payload) => request('/api/cases', { method: 'POST', body: payload }),
+  evidence: (limit = 50) => request(`/api/evidence?limit=${limit}`),
+  offenders: () => request('/api/intelligence/offenders'),
+  trends: () => request('/api/intelligence/trends'),
+
+  config: () => request('/api/admin/config'),
+  setConfig: (key, value) => request('/api/admin/config', { method: 'PATCH', body: { key, value } }),
+  backup: (destination_path) =>
+    request('/api/admin/backup', { method: 'POST', body: { destination_path } }),
+
   accounts: () => request('/api/accounts/'),
   chat: (payload) => request('/api/chat', { method: 'POST', body: payload }),
 };

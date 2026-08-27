@@ -26,17 +26,27 @@ class AdminResponse(BaseModel):
 @router.get("/")
 async def get_notifications(session: AsyncSession = Depends(session_scope)):
     """T063: Fetch pending notifications."""
-    stmt = select(AgentNotification).where(AgentNotification.status == NotificationStatus.PENDING).order_by(AgentNotification.created_at.desc())
+    # Resolved ones too, capped. The dashboard filters between pending and resolved,
+    # and a resolved notification is the record of what the operator decided — dropping
+    # it server-side made that filter show an empty list forever.
+    stmt = (
+        select(AgentNotification)
+        .order_by(AgentNotification.created_at.desc())
+        .limit(200)
+    )
     result = await session.execute(stmt)
     notifications = result.scalars().all()
-    
+
     return {"notifications": [
         {
             "id": n.id,
             "type": n.notification_type,
             "question": n.question,
             "urgency": n.urgency,
-            "suggested_actions": n.suggested_actions
+            "suggested_actions": n.suggested_actions,
+            "status": getattr(n.status, "value", str(n.status)).lower(),
+            "response": n.admin_response,
+            "created_at": n.created_at.isoformat() if n.created_at else None,
         } for n in notifications
     ]}
 

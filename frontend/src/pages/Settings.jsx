@@ -1,234 +1,216 @@
-import React, { useState } from 'react';
-import StatusBadge from '../components/StatusBadge';
+import React, { useState, useEffect } from 'react';
+import { Sliders, Shield, Database, AlertCircle } from 'lucide-react';
 import ConfirmDialog from '../components/ConfirmDialog';
-import { Settings as SettingsIcon, Send, Shield, Bell, Database, Save, TestTube } from 'lucide-react';
+import { api, ApiError } from '../api';
 import './Settings.css';
 
+// What this page used to be: a Telegram token field, a WhatsApp token field, a matrix
+// of alert-routing switches, per-platform account counts, and a Trigger Backup button.
+// None of them were connected. The confirm dialog said "This will update the live
+// system configuration" and its onConfirm closed the dialog. An operator could set a
+// threshold, see it confirmed, and have changed nothing.
+//
+// Three tabs remain, and each one does what it says.
+//
+// The credential fields are gone rather than wired. API keys, the admin token and the
+// Ettok agent key are absent from the server's allowlist by construction, so they
+// cannot be read or written through the API at all — that is a deliberate boundary,
+// not a gap. A form that cannot save is a worse answer than an instruction that works,
+// so the page says where to set them instead.
+
+const TABS = [
+  { id: 'agent', label: 'Agent', icon: Sliders },
+  { id: 'accounts', label: 'Platform Accounts', icon: Shield },
+  { id: 'system', label: 'System', icon: Database },
+];
+
 const Settings = () => {
-  const [activeTab, setActiveTab] = useState('channels');
-  const [showConfirm, setShowConfirm] = useState(false);
-  const [testResult, setTestResult] = useState(null);
+  const [activeTab, setActiveTab] = useState('agent');
+  const [settings, setSettings] = useState([]);
+  const [drafts, setDrafts] = useState({});
+  const [accounts, setAccounts] = useState([]);
+  const [status, setStatus] = useState(null);
+  const [error, setError] = useState(null);
+  const [backupPath, setBackupPath] = useState('');
+  const [confirmBackup, setConfirmBackup] = useState(false);
 
-  // Channel config state
-  const [telegram, setTelegram] = useState({ token: '', chatId: '', enabled: true });
-  const [whatsapp, setWhatsapp] = useState({ phoneNumber: '', apiKey: '', enabled: false });
-
-  // Notification prefs
-  const [notifPrefs, setNotifPrefs] = useState({
-    critical: { telegram: true, whatsapp: true, web: true },
-    high: { telegram: true, whatsapp: false, web: true },
-    medium: { telegram: false, whatsapp: false, web: true },
-    low: { telegram: false, whatsapp: false, web: true },
-  });
-
-  const handleTestMessage = (channel) => {
-    setTestResult({ channel, status: 'sending' });
-    setTimeout(() => {
-      setTestResult({ channel, status: 'success', message: `Test message sent to ${channel} successfully! 🤖` });
-    }, 1500);
+  const load = async () => {
+    try {
+      const [c, a] = await Promise.all([api.config(), api.accounts()]);
+      setSettings(c.settings || []);
+      setDrafts(Object.fromEntries((c.settings || []).map((s) => [s.key, s.value])));
+      setAccounts(a.accounts || []);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
+    }
   };
 
-  const toggleNotifPref = (level, channel) => {
-    setNotifPrefs(prev => ({
-      ...prev,
-      [level]: { ...prev[level], [channel]: !prev[level][channel] }
-    }));
+  useEffect(() => {
+    load();
+  }, []);
+
+  const save = async (key) => {
+    setStatus(null);
+    try {
+      const res = await api.setConfig(key, drafts[key]);
+      setStatus(res.message);
+      setError(null);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
+    }
   };
 
-  const tabs = [
-    { id: 'channels', label: 'Channels', icon: Send },
-    { id: 'notifications', label: 'Alert Routing', icon: Bell },
-    { id: 'accounts', label: 'Platform Accounts', icon: Shield },
-    { id: 'system', label: 'System', icon: Database },
-  ];
+  const runBackup = async () => {
+    setConfirmBackup(false);
+    setStatus(null);
+    try {
+      const res = await api.backup(backupPath);
+      setStatus(res.message || `Backup written to ${backupPath}`);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
+    }
+  };
+
+  const changed = (s) => drafts[s.key] !== s.value;
 
   return (
     <div className="settings-page animate-fade-in">
       <header className="page-header">
         <h1>Settings</h1>
-        <p className="page-subtitle">Channel configuration, notification routing, and system management</p>
+        <p className="page-subtitle">Agent tuning, tracked accounts, and system management</p>
       </header>
+
+      {error && (
+        <div className="glass-panel" style={{ padding: '1rem', marginBottom: '1rem' }}>{error}</div>
+      )}
+      {status && (
+        <div className="glass-panel" style={{ padding: '1rem', marginBottom: '1rem' }}>{status}</div>
+      )}
 
       <div className="settings-layout">
         <nav className="settings-tabs">
-          {tabs.map(tab => (
+          {TABS.map((tab) => (
             <button
               key={tab.id}
               className={`settings-tab ${activeTab === tab.id ? 'active' : ''}`}
               onClick={() => setActiveTab(tab.id)}
             >
-              <tab.icon size={18} />
-              <span>{tab.label}</span>
+              <tab.icon size={18} /> {tab.label}
             </button>
           ))}
         </nav>
 
         <div className="settings-content">
-          {/* Channels Tab */}
-          {activeTab === 'channels' && (
+          {activeTab === 'agent' && (
             <div className="settings-panel glass-panel animate-fade-in">
-              <h2>Communication Channels</h2>
-              <p className="panel-desc">Configure how the agent communicates with you.</p>
+              <h2>Agent Settings</h2>
+              <p className="panel-desc">
+                Written to <code>.env</code> and validated before saving. Most take effect
+                on the next cycle; model changes need a restart.
+              </p>
 
-              <div className="channel-block">
-                <div className="channel-header">
-                  <h3>Telegram</h3>
-                  <label className="toggle-switch">
-                    <input type="checkbox" checked={telegram.enabled} onChange={e => setTelegram(p => ({...p, enabled: e.target.checked}))} />
-                    <span className="toggle-slider" />
+              {settings.map((s) => (
+                <div className="form-group" key={s.key}>
+                  <label>
+                    {s.key}
+                    <span style={{ opacity: 0.6, fontWeight: 'normal' }}> — {s.description}</span>
                   </label>
-                </div>
-                <div className="form-group">
-                  <label>Bot Token</label>
-                  <input type="password" placeholder="123456:ABC-DEF..." value={telegram.token}
-                    onChange={e => setTelegram(p => ({...p, token: e.target.value}))} />
-                </div>
-                <div className="form-group">
-                  <label>Admin Chat ID</label>
-                  <input type="text" placeholder="123456789" value={telegram.chatId}
-                    onChange={e => setTelegram(p => ({...p, chatId: e.target.value}))} />
-                </div>
-                <button className="btn-test" onClick={() => handleTestMessage('Telegram')}>
-                  <TestTube size={16} /> Send Test Message
-                </button>
-                {testResult?.channel === 'Telegram' && (
-                  <div className={`test-result ${testResult.status}`}>
-                    {testResult.status === 'sending' ? 'Sending...' : testResult.message}
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <input
+                      type="text"
+                      value={drafts[s.key] ?? ''}
+                      onChange={(e) => setDrafts({ ...drafts, [s.key]: e.target.value })}
+                    />
+                    <button
+                      className="btn-submit-form"
+                      disabled={!changed(s)}
+                      onClick={() => save(s.key)}
+                    >
+                      Save
+                    </button>
                   </div>
-                )}
-              </div>
+                </div>
+              ))}
 
-              <div className="channel-block">
-                <div className="channel-header">
-                  <h3>WhatsApp</h3>
-                  <label className="toggle-switch">
-                    <input type="checkbox" checked={whatsapp.enabled} onChange={e => setWhatsapp(p => ({...p, enabled: e.target.checked}))} />
-                    <span className="toggle-slider" />
-                  </label>
-                </div>
-                <div className="form-group">
-                  <label>Phone Number</label>
-                  <input type="text" placeholder="+964XXXXXXXXX" value={whatsapp.phoneNumber}
-                    onChange={e => setWhatsapp(p => ({...p, phoneNumber: e.target.value}))} />
-                </div>
-                <div className="form-group">
-                  <label>API Key (WhatsApp Business Cloud API)</label>
-                  <input type="password" placeholder="EAAG..." value={whatsapp.apiKey}
-                    onChange={e => setWhatsapp(p => ({...p, apiKey: e.target.value}))} />
-                </div>
-                <button className="btn-test" onClick={() => handleTestMessage('WhatsApp')}>
-                  <TestTube size={16} /> Send Test Message
-                </button>
-                {testResult?.channel === 'WhatsApp' && (
-                  <div className={`test-result ${testResult.status}`}>
-                    {testResult.status === 'sending' ? 'Sending...' : testResult.message}
-                  </div>
-                )}
-              </div>
-
-              <div className="settings-save-bar">
-                <button className="btn-submit-form" onClick={() => setShowConfirm(true)}>
-                  <Save size={16} /> Save Channel Settings
-                </button>
+              <div className="panel-note" style={{ marginTop: '1.5rem', opacity: 0.75 }}>
+                <AlertCircle size={16} />{' '}
+                API keys, the admin token and the platform key cannot be changed from the
+                dashboard. Set them on the machine with{' '}
+                <code>ankedo configure set KEY=value</code>.
               </div>
             </div>
           )}
 
-          {/* Alert Routing Tab */}
-          {activeTab === 'notifications' && (
-            <div className="settings-panel glass-panel animate-fade-in">
-              <h2>Alert Routing</h2>
-              <p className="panel-desc">Choose which notification levels go to which channels.</p>
-
-              <table className="notif-routing-table">
-                <thead>
-                  <tr>
-                    <th>Alert Level</th>
-                    <th>Telegram</th>
-                    <th>WhatsApp</th>
-                    <th>Web</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {Object.entries(notifPrefs).map(([level, channels]) => (
-                    <tr key={level}>
-                      <td><StatusBadge status={level} /></td>
-                      {['telegram', 'whatsapp', 'web'].map(ch => (
-                        <td key={ch}>
-                          <label className="toggle-switch sm">
-                            <input type="checkbox" checked={channels[ch]} onChange={() => toggleNotifPref(level, ch)} />
-                            <span className="toggle-slider" />
-                          </label>
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-
-              <div className="settings-save-bar">
-                <button className="btn-submit-form"><Save size={16} /> Save Preferences</button>
-              </div>
-            </div>
-          )}
-
-          {/* Platform Accounts Tab */}
           {activeTab === 'accounts' && (
             <div className="settings-panel glass-panel animate-fade-in">
               <h2>Platform Accounts</h2>
-              <p className="panel-desc">Worker accounts used for social media collection.</p>
+              <p className="panel-desc">Accounts the agent is tracking.</p>
 
-              <div className="accounts-grid">
-                {[
-                  { platform: 'facebook', active: 5, quarantine: 1 },
-                  { platform: 'tiktok', active: 3, quarantine: 0 },
-                  { platform: 'instagram', active: 4, quarantine: 2 },
-                ].map(p => (
-                  <div key={p.platform} className="account-platform-card">
-                    <span className={`platform-badge ${p.platform}`}>{p.platform}</span>
-                    <div className="account-stats">
-                      <div className="account-stat">
-                        <span className="account-stat-val active">{p.active}</span>
-                        <span className="account-stat-label">Active</span>
-                      </div>
-                      <div className="account-stat">
-                        <span className="account-stat-val quarantine">{p.quarantine}</span>
-                        <span className="account-stat-label">Quarantine</span>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
+              {accounts.length === 0 ? (
+                <p style={{ opacity: 0.7 }}>No accounts are being tracked yet.</p>
+              ) : (
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Handle</th>
+                      <th>Platform</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {accounts.map((a) => (
+                      <tr key={a.id}>
+                        <td>{a.handle}</td>
+                        <td>
+                          <span className={`platform-badge ${a.platform} sm`}>{a.platform}</span>
+                        </td>
+                        <td>{a.status}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </div>
           )}
 
-          {/* System Tab */}
           {activeTab === 'system' && (
             <div className="settings-panel glass-panel animate-fade-in">
               <h2>System Management</h2>
-              <p className="panel-desc">Backup, maintenance, and system controls.</p>
+              <p className="panel-desc">
+                Export the database and agent state. The path is on the machine running
+                the agent, not on yours.
+              </p>
 
-              <div className="system-actions">
-                <div className="system-action-card">
-                  <Database size={24} />
-                  <div>
-                    <h4>Database Backup</h4>
-                    <p>Export the full SQLite database and agent state to a local path.</p>
-                  </div>
-                  <button className="btn-submit-form" onClick={() => setShowConfirm(true)}>Trigger Backup</button>
-                </div>
+              <div className="form-group">
+                <label>Destination path</label>
+                <input
+                  type="text"
+                  value={backupPath}
+                  onChange={(e) => setBackupPath(e.target.value)}
+                  placeholder="/home/operator/ankedo-backup"
+                />
               </div>
+              <button
+                className="btn-submit-form"
+                disabled={!backupPath.trim()}
+                onClick={() => setConfirmBackup(true)}
+              >
+                Trigger Backup
+              </button>
             </div>
           )}
         </div>
       </div>
 
       <ConfirmDialog
-        isOpen={showConfirm}
-        title="Confirm Changes"
-        message="Are you sure you want to save these changes? This will update the live system configuration."
-        onConfirm={() => setShowConfirm(false)}
-        onCancel={() => setShowConfirm(false)}
+        isOpen={confirmBackup}
+        title="Run backup"
+        message={`Copy the database and agent state to ${backupPath} on the agent's machine?`}
+        onConfirm={runBackup}
+        onCancel={() => setConfirmBackup(false)}
       />
     </div>
   );

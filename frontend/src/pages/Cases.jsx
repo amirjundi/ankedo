@@ -3,30 +3,8 @@ import CaseCard from '../components/CaseCard';
 import StatusBadge from '../components/StatusBadge';
 import ConfirmDialog from '../components/ConfirmDialog';
 import { Plus, Filter, FolderOpen } from 'lucide-react';
+import { api, ApiError } from '../api';
 import './Cases.css';
-
-const STUB_CASES = [
-  {
-    id: 'case_001', title: 'Anti-Yazidi Campaign July 2026', target_group: 'Yazidi',
-    state: 'active', watch_keywords: ['عبدة الشيطان', 'ايزيدي', 'شنكال', 'لالش'],
-    items_count: 342, flagged_count: 89, last_activity: '12 min ago', dialect_scope: 'Iraqi Arabic + Kurmanji'
-  },
-  {
-    id: 'case_002', title: 'Christian Displacement Narrative', target_group: 'Christian',
-    state: 'cooling', watch_keywords: ['مسيحي', 'نصراني', 'سهل نينوى'],
-    items_count: 156, flagged_count: 34, last_activity: '3 hours ago', dialect_scope: 'MSA + Iraqi'
-  },
-  {
-    id: 'case_003', title: 'Shabak Community Targeting', target_group: 'Shabak',
-    state: 'dormant', watch_keywords: ['شبك', 'برطلة'],
-    items_count: 78, flagged_count: 12, last_activity: '2 weeks ago', dialect_scope: 'Iraqi Arabic'
-  },
-  {
-    id: 'case_004', title: 'Mandaean Hate Speech Spike', target_group: 'Mandaean',
-    state: 'reactivated', watch_keywords: ['صابئة', 'مندائي'],
-    items_count: 201, flagged_count: 67, last_activity: '5 min ago', dialect_scope: 'Iraqi Arabic'
-  },
-];
 
 const Cases = () => {
   const [cases, setCases] = useState([]);
@@ -34,12 +12,51 @@ const Cases = () => {
   const [showNewCase, setShowNewCase] = useState(false);
   const [selectedCase, setSelectedCase] = useState(null);
 
-  useEffect(() => {
-    // Stub fetch — would connect to /api/admin or a dedicated cases endpoint
-    setTimeout(() => setCases(STUB_CASES), 400);
-  }, []);
+  const [groups, setGroups] = useState([]);
+  const [error, setError] = useState(null);
+  const [form, setForm] = useState({ title: '', group: '', keywords: '', dialect: 'Iraqi Arabic' });
+  const [saving, setSaving] = useState(false);
 
-  const filtered = filter === 'all' ? cases : cases.filter(c => c.state === filter);
+  const load = async () => {
+    try {
+      const [c, g] = await Promise.all([api.cases(), api.targetGroups()]);
+      setCases(c.cases || []);
+      setGroups(g.target_groups || []);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  // Previously this closed the modal and threw the form away. An operator who
+  // believes they opened a monitoring campaign that does not exist is worse off than
+  // one who was never offered the button.
+  const handleCreate = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await api.createCase({
+        target_group_id: form.group,
+        narrative_pattern: form.title,
+        watch_keywords: form.keywords.split(',').map((k) => k.trim()).filter(Boolean),
+        dialect_scope: form.dialect,
+      });
+      setShowNewCase(false);
+      setForm({ title: '', group: '', keywords: '', dialect: 'Iraqi Arabic' });
+      await load();
+      setError(null);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const filtered = filter === 'all'
+    ? cases
+    : cases.filter(c => (c.state || '').toLowerCase() === filter);
 
   const stateFilters = ['all', 'active', 'cooling', 'dormant', 'reactivated'];
 
@@ -55,6 +72,8 @@ const Cases = () => {
         </button>
       </header>
 
+      {error && <div className="glass-panel" style={{ padding: '1rem', marginBottom: '1rem' }}>{error}</div>}
+
       <div className="cases-filters">
         <Filter size={16} className="filter-icon" />
         {stateFilters.map(f => (
@@ -65,7 +84,7 @@ const Cases = () => {
           >
             {f === 'all' ? 'All' : f}
             {f !== 'all' && (
-              <span className="filter-count">{cases.filter(c => c.state === f).length}</span>
+              <span className="filter-count">{cases.filter(c => (c.state || '').toLowerCase() === f).length}</span>
             )}
           </button>
         ))}
@@ -88,54 +107,45 @@ const Cases = () => {
         <div className="modal-overlay" onClick={() => setShowNewCase(false)}>
           <div className="modal-content glass-panel animate-fade-in" onClick={e => e.stopPropagation()}>
             <h2>Register New Case</h2>
-            <form className="new-case-form" onSubmit={e => { e.preventDefault(); setShowNewCase(false); }}>
+            <form className="new-case-form" onSubmit={handleCreate}>
               <div className="form-group">
                 <label>Case Title</label>
-                <input type="text" placeholder="e.g., Anti-Yazidi Campaign July 2026" />
+                <input type="text" required value={form.title}
+                  onChange={e => setForm({ ...form, title: e.target.value })}
+                  placeholder="e.g., Anti-Yazidi Campaign July 2026" />
               </div>
               <div className="form-group">
                 <label>Target Group</label>
-                <select defaultValue="">
+                <select required value={form.group}
+                  onChange={e => setForm({ ...form, group: e.target.value })}>
                   <option value="" disabled>Select target group...</option>
-                  <option>Yazidi</option>
-                  <option>Christian</option>
-                  <option>Shabak</option>
-                  <option>Mandaean</option>
-                  <option>Turkmen</option>
-                  <option>Faili Kurd</option>
-                  <option>Other</option>
+                  {groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
                 </select>
               </div>
               <div className="form-group">
                 <label>Watch Keywords (comma-separated)</label>
-                <input type="text" placeholder="عبدة الشيطان, ايزيدي, شنكال" />
-              </div>
-              <div className="form-group">
-                <label>Seed Posts / URLs (one per line)</label>
-                <textarea rows={3} placeholder="https://facebook.com/..." />
+                <input type="text" value={form.keywords}
+                  onChange={e => setForm({ ...form, keywords: e.target.value })}
+                  placeholder="comma-separated" />
               </div>
               <div className="form-row">
                 <div className="form-group">
                   <label>Dialect Scope</label>
-                  <select defaultValue="iraqi">
-                    <option value="iraqi">Iraqi Arabic</option>
-                    <option value="msa">MSA</option>
-                    <option value="sorani">Sorani Kurdish</option>
-                    <option value="kurmanji">Kurmanji Kurdish</option>
-                    <option value="mixed">Mixed</option>
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label>Initial State</label>
-                  <select defaultValue="active">
-                    <option value="active">Active</option>
-                    <option value="cooling">Cooling</option>
+                  <select value={form.dialect}
+                    onChange={e => setForm({ ...form, dialect: e.target.value })}>
+                    <option>Iraqi Arabic</option>
+                    <option>MSA</option>
+                    <option>Sorani Kurdish</option>
+                    <option>Kurmanji Kurdish</option>
+                    <option>Mixed</option>
                   </select>
                 </div>
               </div>
               <div className="form-actions">
                 <button type="button" className="btn-cancel-form" onClick={() => setShowNewCase(false)}>Cancel</button>
-                <button type="submit" className="btn-submit-form">Create Case</button>
+                <button type="submit" className="btn-submit-form" disabled={saving}>
+                  {saving ? 'Creating…' : 'Create Case'}
+                </button>
               </div>
             </form>
           </div>

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import MetricCard from '../components/MetricCard';
 import StatsChart from '../components/StatsChart';
 import { FileText, TrendingUp, AlertTriangle, Calendar, Users } from 'lucide-react';
+import { api, ApiError } from '../api';
 import './Reports.css';
 
 const Reports = () => {
@@ -10,31 +11,28 @@ const Reports = () => {
   const [offenders, setOffenders] = useState([]);
   const [dateRange, setDateRange] = useState(30);
 
+  const [error, setError] = useState(null);
+
   useEffect(() => {
-    // Stub fetches — would connect to /api/reports/summary, /api/reports/stats/pages, /api/reports/repeat-offenders
-    setTimeout(() => {
-      setSummary({
-        new_cases_count: 14,
-        items_flagged_count: 342,
-        confirmed_count: 187,
-        false_positive_rate: 12.3,
-      });
-      setPageStats([
-        { label: 'Page: الشعب العراقي', value: 47 },
-        { label: 'Page: أخبار العراق', value: 34 },
-        { label: 'Page: منتدى الحوار', value: 28 },
-        { label: 'Page: صوت الشارع', value: 19 },
-        { label: 'Page: Iraqi Youth', value: 14 },
-        { label: 'Page: قناة الأخبار', value: 11 },
-      ]);
-      setOffenders([
-        { handle: '@angry_user99', platform: 'facebook', offenses: 42, last_active: '2 min ago' },
-        { handle: '@hate_network', platform: 'tiktok', offenses: 38, last_active: '15 min ago' },
-        { handle: '@troll_farm', platform: 'instagram', offenses: 27, last_active: '1 hour ago' },
-        { handle: '@banned_repeat', platform: 'facebook', offenses: 21, last_active: '3 hours ago' },
-        { handle: '@sectarian_page', platform: 'facebook', offenses: 18, last_active: 'Yesterday' },
-      ]);
-    }, 600);
+    (async () => {
+      try {
+        const [s, ps, off] = await Promise.all([
+          api.summary(dateRange),
+          api.pageStats(),
+          api.repeatOffenders(),
+        ]);
+        setSummary(s);
+        // The chart wants {label, value}; the endpoint returns its own shape.
+        setPageStats((ps.pages || ps.stats || []).map((row) => ({
+          label: row.handle || row.page || row.label || 'unknown',
+          value: row.flagged ?? row.count ?? row.value ?? 0,
+        })));
+        setOffenders(off.offenders || []);
+        setError(null);
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : String(err));
+      }
+    })();
   }, [dateRange]);
 
   return (

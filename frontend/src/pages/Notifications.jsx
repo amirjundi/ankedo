@@ -1,34 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import StatusBadge from '../components/StatusBadge';
 import { Bell, CheckCircle, Clock, AlertTriangle, MessageSquare } from 'lucide-react';
+import { api, ApiError } from '../api';
 import './Notifications.css';
-
-const STUB_NOTIFICATIONS = [
-  {
-    id: 'n_001', type: 'account_blocked', urgency: 'critical',
-    question: 'Facebook account fb_worker_3 has been blocked. Current capacity dropped to 4/6. What would you like to do?',
-    suggested_actions: ['1. Add backup account', '2. Pause Facebook monitoring', '3. Wait and retry in 24h'],
-    created_at: '2026-07-23T10:15:00Z', status: 'pending',
-  },
-  {
-    id: 'n_002', type: 'case_reactivation', urgency: 'high',
-    question: 'Watch keywords for "Shabak Community Targeting" case have resurfaced on 3 new posts. Recommend reactivation?',
-    suggested_actions: ['1. Reactivate case', '2. Keep dormant', '3. Show me the posts first'],
-    created_at: '2026-07-23T09:45:00Z', status: 'pending',
-  },
-  {
-    id: 'n_003', type: 'discovery_report', urgency: 'medium',
-    question: 'Discovered 2 new pages with high hate speech density during routine scanning. Add to watch list?',
-    suggested_actions: ['1. Add both to watch list', '2. Show me details first', '3. Ignore'],
-    created_at: '2026-07-23T08:30:00Z', status: 'pending',
-  },
-  {
-    id: 'n_004', type: 'queue_overflow', urgency: 'high',
-    question: 'Review queue has reached 47 items (threshold: 30). Batch borderline items or request additional reviewer?',
-    suggested_actions: ['1. Batch borderline items', '2. Increase auto-flag threshold', '3. I will review now'],
-    created_at: '2026-07-22T23:00:00Z', status: 'resolved', response: 'I will review now',
-  },
-];
 
 const ICON_MAP = {
   account_blocked: AlertTriangle,
@@ -40,9 +14,22 @@ const ICON_MAP = {
 const Notifications = () => {
   const [notifications, setNotifications] = useState([]);
   const [filter, setFilter] = useState('all');
+  const [error, setError] = useState(null);
+
+  const load = async () => {
+    try {
+      const data = await api.notifications();
+      setNotifications(data.notifications || []);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
+    }
+  };
 
   useEffect(() => {
-    setTimeout(() => setNotifications(STUB_NOTIFICATIONS), 400);
+    load();
+    const timer = setInterval(load, 60_000);
+    return () => clearInterval(timer);
   }, []);
 
   const filtered = notifications.filter(n => {
@@ -51,10 +38,18 @@ const Notifications = () => {
     return true;
   });
 
-  const handleRespond = (notifId, action) => {
-    setNotifications(prev => prev.map(n =>
-      n.id === notifId ? { ...n, status: 'resolved', response: action } : n
-    ));
+  // The old handler only changed local state: the operator answered the agent's
+  // question, the card moved to Resolved, and the agent never heard the answer.
+  const handleRespond = async (notifId, action) => {
+    try {
+      await api.respondToNotification(notifId, { action_taken: action });
+      setNotifications(prev => prev.map(n =>
+        n.id === notifId ? { ...n, status: 'resolved', response: action } : n
+      ));
+      setError(null);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
+    }
   };
 
   return (
@@ -70,6 +65,8 @@ const Notifications = () => {
           </span>
         </div>
       </header>
+
+      {error && <div className="glass-panel" style={{ padding: '1rem', marginBottom: '1rem' }}>{error}</div>}
 
       <div className="notif-filters">
         {['all', 'pending', 'resolved'].map(f => (
@@ -89,8 +86,8 @@ const Notifications = () => {
                   <IconComponent size={20} />
                 </div>
                 <div className="notif-header-text">
-                  <span className="notif-type">{notif.type.replace(/_/g, ' ')}</span>
-                  <span className="notif-time">{new Date(notif.created_at).toLocaleString()}</span>
+                  <span className="notif-type">{(notif.type || '').replace(/_/g, ' ')}</span>
+                  <span className="notif-time">{notif.created_at ? new Date(notif.created_at).toLocaleString() : ''}</span>
                 </div>
                 <StatusBadge status={notif.urgency} size="sm" />
               </div>
