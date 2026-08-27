@@ -147,6 +147,13 @@ class AgentSettings(BaseSettings):
     # Autonomous Discovery
     # -----------------------------------------------------------------------
     auto_add_accounts_per_cycle: int = Field(default=5, ge=0)
+    # Flagged items by one author before the agent starts watching them. Three is not
+    # a coincidence and is not yet a campaign; it is enough to be worth collecting
+    # more of, which is all adding to the watch list does.
+    discovery_flag_threshold: int = Field(default=3, ge=1)
+    # How far back to look. A long window turns someone flagged three times over a
+    # year into a target; the concern is concentration, not a lifetime total.
+    discovery_window_days: int = Field(default=14, ge=1)
 
     # -----------------------------------------------------------------------
     # API security (NFR-DP-1/2)
