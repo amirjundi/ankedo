@@ -7,10 +7,48 @@
 
 const BASE = ''; // same origin: the dashboard is served by the agent itself
 
-// sessionStorage, not localStorage: the token dies with the tab rather than sitting
-// on disk on a machine holding evidence about people at risk.
-export const getToken = () => sessionStorage.getItem('ankedo_token') || '';
-export const setToken = (value) => sessionStorage.setItem('ankedo_token', value.trim());
+// localStorage, so the token is entered once and survives closing the tab.
+//
+// This was sessionStorage, on the reasoning that a token should not sit on disk on a
+// machine holding evidence about people at risk. That reasoning was wrong about where
+// the risk is. Retyping a 32-character token on every tab is the kind of friction
+// people solve by picking a short token, writing it on a note, or turning auth off —
+// each worse than the disk write it was avoiding. And the token is already on disk on
+// that machine, in .env, in plaintext.
+//
+// It is scoped to the dashboard's own origin, so a tunnel domain and localhost keep
+// separate tokens, which is the correct behaviour when they may not be the same agent.
+//
+// clear() exists for a shared or borrowed machine, and is what the UI offers on a
+// rejected token — a stored bad token would otherwise fail silently forever.
+const KEY = 'ankedo_token';
+
+export const getToken = () => {
+  try {
+    return localStorage.getItem(KEY) || '';
+  } catch {
+    // Private browsing and some hardened configurations throw on access rather than
+    // returning null. An unreadable store is an absent one, not a crashed dashboard.
+    return '';
+  }
+};
+
+export const setToken = (value) => {
+  try {
+    localStorage.setItem(KEY, value.trim());
+  } catch {
+    /* nothing to do: the request still carries the token for this page load */
+  }
+};
+
+export const clearToken = () => {
+  try {
+    localStorage.removeItem(KEY);
+  } catch {
+    /* already unreachable */
+  }
+};
+
 export const hasToken = () => Boolean(getToken());
 
 /** Raised for anything the caller may want to distinguish; `status` is 0 for a
@@ -43,6 +81,9 @@ async function request(path, { method = 'GET', body } = {}) {
   }
 
   if (res.status === 401 || res.status === 403) {
+    // Drop it. A stored token the agent rejects would otherwise be resent on every
+    // request forever, and the prompt to replace it would never be reachable.
+    if (token) clearToken();
     throw new ApiError(
       token ? 'Token rejected — check ADMIN_API_TOKEN.' : 'Sign in: paste your admin token.',
       res.status,

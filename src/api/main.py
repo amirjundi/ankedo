@@ -58,6 +58,24 @@ if _settings.extension_enabled and _settings.extension_origin:
     # setting must not widen CORS to every extension the operator has installed.
     _origins.append(_settings.extension_origin)
 
+if _settings.public_dashboard_url:
+    # Scheme and host only. A full URL with a path is a natural thing to paste and is
+    # not a valid Origin — the browser would compare it against a value that can never
+    # match, and the failure appears as a CORS error naming an origin that looks right.
+    from urllib.parse import urlsplit
+
+    parsed = urlsplit(_settings.public_dashboard_url.strip())
+    if parsed.scheme and parsed.netloc:
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        if origin not in _origins:
+            _origins.append(origin)
+    else:
+        log.warning(
+            "PUBLIC_DASHBOARD_URL is not a full URL and was ignored",
+            value=_settings.public_dashboard_url,
+            expected="https://dashboard.example.com",
+        )
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_origins,

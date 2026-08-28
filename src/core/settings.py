@@ -162,6 +162,16 @@ class AgentSettings(BaseSettings):
     admin_api_token: Optional[str] = Field(default=None)
     # Comma-separated origins. A tunnel controls reachability, not authorisation, so
     # this stays restrictive even when the dashboard is exposed publicly.
+    # The address the dashboard is reached at from outside — a Cloudflare tunnel
+    # hostname, a reverse-proxy domain, a Tailscale name. Added to the CORS origins so
+    # the operator does not have to know that CORS is the reason their dashboard broke.
+    #
+    # Mostly it is not needed: the agent serves the dashboard itself, so a browser at
+    # the tunnel domain is making same-origin requests and CORS never applies. It
+    # matters when the frontend is hosted separately, or a tool proxies only /api.
+    # Cheap to set and confusing to diagnose, so it is offered explicitly.
+    public_dashboard_url: str = Field(default="")
+
     cors_allowed_origins: str = Field(default="http://localhost:8000,http://127.0.0.1:8000")
 
     # -----------------------------------------------------------------------
