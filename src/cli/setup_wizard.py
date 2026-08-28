@@ -602,6 +602,8 @@ def _choose_models(config: dict, provider_id: str, provider: dict, api_key: str,
     for role, (env_key, _) in MODEL_ENV_KEYS.items():
         config[env_key] = _suggest_from_catalog(role, catalog, provider["models"][role])
 
+    _set_fallback_chain(config, available)
+
     console.print(_model_table(config))
     _warn_unstructured(config, catalog)
     console.print()
@@ -621,6 +623,45 @@ def _choose_models(config: dict, provider_id: str, provider: dict, api_key: str,
             # operator may know better than its listing.
             console.print(f"    [yellow]⚠ {answer} is not in the list — using it anyway[/]")
         config[env_key] = answer
+
+    # Recomputed: the operator may have just changed the primary chat model, and
+    # leaving it in its own fallback chain would retry the model that failed.
+    config.pop("FALLBACK_MODELS", None)
+    _set_fallback_chain(config, available)
+
+
+def _set_fallback_chain(config: dict, available: list[str]) -> None:
+    """Every other model the provider serves, as a fallback chain.
+
+    The fallback machinery existed and was wired into every call, and nothing ever
+    populated it — FALLBACK_MODELS defaulted to empty, so one 429 ended the turn.
+    On the operator's free-tier proxy that is not an edge case: five models are
+    served, most are rate-limited most of the time, and the chat failed with
+    "Model nemotron-3-super-free is not supported (free model rate limit)" while
+    four other models sat there able to answer.
+
+    Ordered by how many roles already chose them. A model the operator picked for
+    triage and critic is one they consider good, and is a better second choice than
+    one nothing selected.
+
+    Not written when the operator has set their own chain, and not written for a
+    single-model provider where a fallback list would be an empty gesture.
+    """
+    if config.get("FALLBACK_MODELS"):
+        return
+
+    chosen = [config.get(env_key) for env_key, _ in MODEL_ENV_KEYS.values()]
+    preference = {name: chosen.count(name) for name in set(chosen) if name}
+
+    others = [m for m in available if m not in preference]
+    ranked = sorted(preference, key=lambda m: -preference[m]) + others
+
+    # Drop the primary chat model: it is what the call already tried.
+    primary = config.get("CHAT_AGENT_MODEL")
+    chain = [m for m in ranked if m and m != primary]
+
+    if chain:
+        config["FALLBACK_MODELS"] = ",".join(chain[:4])
 
 
 def _enrol_with_code(base_url: str, agent_id: str) -> str:
