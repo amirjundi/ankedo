@@ -224,6 +224,42 @@ def _check_database() -> Check:
                       "Run: ankedo db init")
 
 
+def _run_coroutine(coro):
+    """Run a coroutine whether or not a loop is already running.
+
+    `asyncio.run` raises inside a running loop, and the health checks are called from
+    two places: the CLI, where there is no loop, and the chat `health` action, which
+    runs inside the API's loop. From chat it raised "asyncio.run() cannot be called
+    from a running event loop" — so asking the agent to check its own health crashed
+    the check, and the operator was told the browser was broken for a reason that was
+    really this.
+
+    A thread gets its own loop, which is the cheap way to be callable from both.
+    """
+    import threading
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    box: dict = {}
+
+    def worker():
+        try:
+            box["value"] = asyncio.run(coro)
+        except BaseException as exc:  # noqa: BLE001 — re-raised on the caller's thread
+            box["error"] = exc
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    thread.join()
+
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
 async def _launch_probe(options: dict) -> None:
     """Start and immediately stop the browser the collector uses."""
     from camoufox.async_api import AsyncCamoufox
@@ -257,7 +293,7 @@ def _check_playwright() -> Check:
         # Launch what the collector launches. Camoufox is a Firefox fork with its own
         # browser download, so testing Playwright's chromium would pass while
         # collection still had nothing to start.
-        asyncio.run(_launch_probe(options))
+        _run_coroutine(_launch_probe(options))
     except Exception as exc:
         detail = str(exc).strip().splitlines()[0][:160] if str(exc).strip() else type(exc).__name__
         using = settings.browser_executable_path or settings.browser_channel

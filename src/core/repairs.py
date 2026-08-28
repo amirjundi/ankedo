@@ -85,11 +85,22 @@ REPAIRS: dict[str, Repair] = {
             # for a Playwright too old to know this distro. The final fallback — using
             # a browser already on the machine — writes config rather than running a
             # command, so it lives in _adopt_system_browser.
+            # `sync` as well as `fetch`. Camoufox renamed the subcommand, and on the
+            # operator's machine `fetch` ran, reported success, and left the browser
+            # missing — the launch then said "Version 'official' not found in cache.
+            # Run 'camoufox sync'". The repair had done nothing and said it worked,
+            # which is worse than failing, and the operator was left reading an
+            # instruction the agent could have followed itself.
+            #
+            # Both are tried because which one exists depends on the installed
+            # version, and an unknown subcommand simply fails and moves on.
             commands=(
                 (sys.executable, "-m", "camoufox", "fetch"),
+                (sys.executable, "-m", "camoufox", "sync"),
                 (sys.executable, "-m", "playwright", "install", "firefox"),
                 (sys.executable, "-m", "pip", "install", "-U", "camoufox", "playwright"),
                 (sys.executable, "-m", "camoufox", "fetch"),
+                (sys.executable, "-m", "camoufox", "sync"),
             ),
         ),
         Repair(
@@ -143,8 +154,34 @@ async def _run(argv: tuple[str, ...], timeout: int) -> tuple[bool, str]:
         return False, f"timed out after {timeout}s"
 
     text = (out or b"").decode("utf-8", "replace").strip()
-    tail = text.splitlines()[-1][:200] if text else ""
-    return process.returncode == 0, tail
+    ok = process.returncode == 0
+    return ok, _explain(text, ok)
+
+
+def _explain(text: str, ok: bool) -> str:
+    """The part of the output worth showing.
+
+    This returned the last line, which for a failed `pip install --quiet` was
+    "--quiet: ok" — a fragment of an unrelated line, reported to the operator as the
+    reason their repair failed. A wrong explanation is worse than none: it sends
+    someone to debug a thing that is not happening.
+
+    A failure's useful message is rarely the last line, so lines that name an error
+    are preferred and a few lines of context are kept.
+    """
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return "ok" if ok else "the command failed with no output"
+
+    if ok:
+        return lines[-1][:200]
+
+    named = [
+        line for line in lines
+        if any(word in line.lower() for word in ("error", "failed", "not found", "no such"))
+    ]
+    chosen = named[-3:] if named else lines[-3:]
+    return " / ".join(chosen)[:400]
 
 
 # ── Repairs that write files rather than running commands ────────────────────

@@ -127,7 +127,10 @@ async def test_a_pip_upgrade_alone_does_not_count_as_success(monkeypatch):
     # It must have gone on to retry the fetch after the upgrade rather than stopping
     # at a successful pip step.
     assert len(calls) == len(mod.REPAIRS["browser"].commands)
-    assert calls[-1][-1] == "fetch"
+    # A browser download, not a pip step. Which subcommand it is depends on the
+    # installed Camoufox — it renamed `fetch` to `sync`, and the chain tries both —
+    # so the assertion is that the last thing attempted actually fetches a browser.
+    assert calls[-1][-1] in ("fetch", "sync"), calls[-1]
 
 
 # ── Filesystem repairs ───────────────────────────────────────────────────────
