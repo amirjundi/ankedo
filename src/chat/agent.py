@@ -43,6 +43,11 @@ PROMPT_VERSION = "chat-v2"
 # conversation the operator has forgotten about.
 HISTORY_TURNS = 12
 
+# How many actions one message may set off. Four covers the real compound
+# requests — test the browser, repair it, test again, report — without letting a
+# confused model spend an afternoon of free-tier calls on one sentence.
+MAX_STEPS = 4
+
 SYSTEM_PROMPT = """You are the admin assistant for AnkEdo, a hate-speech monitoring \
 agent for Arabic and Kurdish social media. You are talking to the operator who runs it.
 
@@ -78,6 +83,10 @@ class ChatDecision(BaseModel):
     days: int = Field(default=7, description="Days of history, for stats")
     limit: int = Field(default=10, description="Row count, for recent_flagged")
     what: str = Field(default="", description="Which repair to run, for repair")
+    text: str = Field(default="", description="The text to judge, for classify")
+    post_text: str = Field(
+        default="", description="The post the text replied to, for classify"
+    )
     message: str = Field(default="", description="What to say to the operator")
 
 
@@ -190,55 +199,131 @@ class ChatAgent:
         await self.session.commit()
 
     async def handle(self, message: str) -> ChatReply:
-        """Interpret one operator message."""
+        """Work on one operator message, taking several steps if it needs them.
+
+        This used to make one model call, run one action, and return. So a request
+        needing two — "test the browser and report some hate speech" — could not be
+        served at all, and the operator reasonably concluded the agent could not do
+        anything. The actions existed; there was no way to reach more than one.
+
+        Now the model sees what each action returned and chooses again, up to
+        MAX_STEPS. That is the tool-use loop, with the two properties that make it
+        safe here kept intact: the model never invokes anything — it names an action
+        and Python looks the name up in a fixed registry — and a mutating action still
+        stops for a human. Content this agent reads is written by strangers, so a loop
+        that could call arbitrary tools would put a Facebook comment one injection
+        away from the settings file.
+
+        Bounded on three sides: a step limit, a stop when the model repeats an action
+        it has already run with the same arguments, and a stop the moment it wants to
+        change something.
+        """
         if not (message or "").strip():
             return ChatReply(text="Say that again?")
 
         history = await self._history()
         await self._remember(message, from_agent=False)
 
-        try:
-            decision = await self.llm.generate(
-                model=self.settings.chat_agent_model,
-                prompt=(f"{history}\n\n" if history else "") + f"Operator says: {message}",
-                schema=ChatDecision,
-                purpose="chat",
-                prompt_version=PROMPT_VERSION,
-                system_instruction=SYSTEM_PROMPT.format(catalogue=catalogue()),
-            )
-        except LLMError as exc:
-            log.warning("Chat model call failed", error=str(exc))
-            # Not remembered: a failed call is not something the operator said, and
-            # replaying it as context would teach the next turn that it happened.
-            return ChatReply(text=f"I could not reach the model: {exc}")
+        done: list[tuple[str, str]] = []
+        seen: set[tuple] = set()
 
-        name = (decision.action or "reply").strip()
-        if name == "reply" or name not in ACTIONS:
-            # An unknown name is a model mistake, not a request to be honoured. Fall
-            # back to conversation rather than guessing at a near-match.
-            if name != "reply":
-                log.info("Chat model named an unknown action", action=name)
-            text = decision.message or await self._plain_reply(history, message)
+        for step in range(MAX_STEPS):
+            try:
+                decision = await self.llm.generate(
+                    model=self.settings.chat_agent_model,
+                    prompt=self._prompt(history, message, done),
+                    schema=ChatDecision,
+                    purpose="chat",
+                    prompt_version=PROMPT_VERSION,
+                    system_instruction=SYSTEM_PROMPT.format(catalogue=catalogue()),
+                )
+            except LLMError as exc:
+                log.warning("Chat model call failed", error=str(exc), step=step)
+                if done:
+                    # Work was done before the endpoint failed. Losing it and saying
+                    # only "I could not reach the model" would hide a browser test the
+                    # operator asked for and which actually ran.
+                    return await self._finish(done, "")
+                return ChatReply(text=f"I could not reach the model: {exc}")
+
+            name = (decision.action or "reply").strip()
+
+            if name == "reply" or name not in ACTIONS:
+                if name != "reply":
+                    log.info("Chat model named an unknown action", action=name)
+                closing = decision.message
+                if not closing and not done:
+                    closing = await self._plain_reply(history, message)
+                return await self._finish(done, closing)
+
+            arguments = {
+                "key": decision.key,
+                "value": decision.value,
+                "days": decision.days,
+                "limit": decision.limit,
+                "what": decision.what,
+                "text": decision.text,
+                "post_text": decision.post_text,
+            }
+
+            if ACTIONS[name].mutating:
+                # A human decides. Anything already done is reported alongside, so
+                # confirming is not a blind choice.
+                summary = self._describe(name, arguments)
+                prefix = self._render(done)
+                return ChatReply(
+                    text=f"{prefix}{summary}\n\nConfirm?",
+                    pending={"action": name, "arguments": arguments},
+                )
+
+            fingerprint = (name, tuple(sorted((k, str(v)) for k, v in arguments.items())))
+            if fingerprint in seen:
+                # The same call again cannot tell it anything new, and a model that
+                # repeats itself will keep repeating until the step limit.
+                log.info("Chat model repeated an action, stopping", action=name)
+                return await self._finish(done, decision.message)
+            seen.add(fingerprint)
+
+            reply = await self._execute(name, arguments, remember=False)
+            done.append((name, reply.text))
+
+        log.info("Chat step limit reached", steps=MAX_STEPS)
+        return await self._finish(done, "")
+
+    def _prompt(self, history: str, message: str, done: list[tuple[str, str]]) -> str:
+        """What the model sees, including what it has already learned this turn."""
+        parts = []
+        if history:
+            parts.append(history)
+        parts.append(f"Operator says: {message}")
+
+        if done:
+            lines = ["Actions you have already run for this request, and what they",
+                     "returned. Use them. Run another action only if you still need",
+                     "something they do not tell you; otherwise choose \"reply\" and",
+                     "answer the operator.", ""]
+            for name, result in done:
+                lines.append(f"[{name}]\n{result}")
+            parts.append("\n".join(lines))
+
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _render(done: list[tuple[str, str]]) -> str:
+        return "".join(f"{result}\n\n" for _, result in done)
+
+    async def _finish(self, done: list[tuple[str, str]], closing: str) -> ChatReply:
+        """Assemble the turn: what was run, then what the model made of it."""
+        closing = (closing or "").strip()
+
+        if not done:
+            text = closing or what_i_can_do()
             await self._remember(text, from_agent=True)
             return ChatReply(text=text)
 
-        action = ACTIONS[name]
-        arguments = {
-            "key": decision.key,
-            "value": decision.value,
-            "days": decision.days,
-            "limit": decision.limit,
-            "what": decision.what,
-        }
-
-        if action.mutating:
-            summary = self._describe(name, arguments)
-            return ChatReply(
-                text=f"{summary}\n\nConfirm?",
-                pending={"action": name, "arguments": arguments},
-            )
-
-        return await self._execute(name, arguments)
+        text = (self._render(done) + closing).strip()
+        await self._remember(text, from_agent=True)
+        return ChatReply(text=text, action_run=done[-1][0])
 
     async def _plain_reply(self, history: str, message: str) -> str:
         """Second attempt at the conversational half, with the routing removed."""
@@ -289,7 +374,9 @@ class ChatAgent:
             return ChatReply(text=f"No such action: {name}")
         return await self._execute(name, (pending or {}).get("arguments", {}))
 
-    async def _execute(self, name: str, arguments: dict) -> ChatReply:
+    async def _execute(
+        self, name: str, arguments: dict, *, remember: bool = True
+    ) -> ChatReply:
         try:
             result = await run_action(name, self.session, arguments)
         except ActionError as exc:
@@ -299,7 +386,8 @@ class ChatAgent:
             return ChatReply(text=f"{name} failed: {exc}", action_run=name)
 
         log.info("Chat action ran", action=name)
-        await self._remember(result, from_agent=True)
+        if remember:
+            await self._remember(result, from_agent=True)
         return ChatReply(text=result, action_run=name)
 
     @staticmethod

@@ -76,12 +76,12 @@ async def test_a_mutation_is_not_performed_on_the_models_say_so(session, monkeyp
         session, action="set_config", key="LOG_LEVEL", value="DEBUG"
     ).handle("turn on debug logging")
 
-    assert reply.pending == {
-        "action": "set_config",
-        "arguments": {
-            "key": "LOG_LEVEL", "value": "DEBUG", "days": 7, "limit": 10, "what": "",
-        },
-    }
+    # The values that matter, not the exact shape of the arguments dict. Asserting
+    # every key means adding an action with a new argument breaks tests about a
+    # different action entirely.
+    assert reply.pending["action"] == "set_config"
+    assert reply.pending["arguments"]["key"] == "LOG_LEVEL"
+    assert reply.pending["arguments"]["value"] == "DEBUG"
     assert reply.action_run is None
     assert written == [], "the setting was written before anyone confirmed"
 
@@ -117,10 +117,8 @@ async def test_repairing_needs_confirmation_before_it_installs_anything(session,
     )
 
     assert ran == []
-    assert reply.pending == {
-        "action": "repair",
-        "arguments": {"key": "", "value": "", "days": 7, "limit": 10, "what": "browser"},
-    }
+    assert reply.pending["action"] == "repair"
+    assert reply.pending["arguments"]["what"] == "browser"
     assert "browser" in reply.text and "install" in reply.text
 
 
