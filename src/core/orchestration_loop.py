@@ -67,26 +67,58 @@ class OrchestrationLoop:
         # Process them...
 
     async def _check_alerts(self) -> None:
-        """T073: Monitors healthy-account count and fires AgentNotification if below threshold."""
-        stmt = select(AgentWorkerAccount.platform).where(AgentWorkerAccount.state == AccountState.HEALTHY)
-        result = await self.session.execute(stmt)
-        platforms = [p for (p,) in result.all()]
-        
-        counts = {
-            "facebook": platforms.count("facebook"),
-            "tiktok": platforms.count("tiktok"),
-            "instagram": platforms.count("instagram")
-        }
-        
-        for platform, count in counts.items():
-            if count < self.settings.min_healthy_accounts_per_platform:
-                await self.dispatcher.send(
-                    type_="CapacityAlert",
-                    context={"platform": platform, "healthy_count": count},
-                    question=f"Low capacity on {platform}. Current: {count}. Minimum required: {self.settings.min_healthy_accounts_per_platform}",
-                    urgency="High",
-                    suggested_actions=["Add new worker accounts", "Review quarantined accounts"],
-                )
+        """Warn when a platform that was working no longer has enough healthy accounts.
+
+        Not when it has none at all. This alerted on every platform below the minimum,
+        and zero is below the minimum, so a freshly installed agent fired three High
+        alerts a minute — forever — about platforms the operator had not configured
+        yet. The operator watched forty-five accumulate and time out in one log.
+
+        That is worse than noise. An alert that fires on a healthy new install teaches
+        the person reading it that these alerts mean nothing, so the one that matters
+        — a platform whose accounts were all banned overnight — arrives looking
+        exactly like the forty-five they have already learned to scroll past.
+
+        So the alert is about degradation: a platform with accounts, too few of them
+        healthy. A platform with no accounts is unconfigured, which is a setup step
+        rather than an incident.
+        """
+        rows = (
+            await self.session.execute(
+                select(AgentWorkerAccount.platform, AgentWorkerAccount.state)
+            )
+        ).all()
+
+        if not rows:
+            return
+
+        total: dict[str, int] = {}
+        healthy: dict[str, int] = {}
+        for platform, state in rows:
+            total[platform] = total.get(platform, 0) + 1
+            if state == AccountState.HEALTHY:
+                healthy[platform] = healthy.get(platform, 0) + 1
+
+        for platform, configured in total.items():
+            count = healthy.get(platform, 0)
+            if count >= self.settings.min_healthy_accounts_per_platform:
+                continue
+
+            await self.dispatcher.send(
+                type_="CapacityAlert",
+                context={
+                    "platform": platform,
+                    "healthy_count": count,
+                    "configured_count": configured,
+                },
+                question=(
+                    f"Low capacity on {platform}: {count} healthy of {configured} "
+                    f"configured, minimum is "
+                    f"{self.settings.min_healthy_accounts_per_platform}."
+                ),
+                urgency="High",
+                suggested_actions=["Add new worker accounts", "Review quarantined accounts"],
+            )
 
     async def _sync_workers(self) -> None:
         """T075: Set each account's crawl interval from case state and health.
