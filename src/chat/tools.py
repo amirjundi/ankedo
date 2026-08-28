@@ -212,6 +212,137 @@ async def _set_config(session: AsyncSession, key: str = "", value: str = "", **_
     return f"{key}: {previous} → {value}. Restart the agent for it to take effect."
 
 
+async def _classify(session: AsyncSession, text: str = "", post_text: str = "", **_) -> str:
+    """Classify a piece of text on the spot.
+
+    The operator asked the agent to "test and report some hate speech" and it said it
+    could not act at all. It could not do *that* — there was no action for it — but
+    the honest answer was to offer this, which is the thing the whole system exists to
+    do and takes one message to demonstrate.
+
+    `post_text` matters more than it looks. A comment is judged against what it
+    replies to, so classifying a bare phrase asks a different question from the one
+    the agent normally answers. Without a parent the verdict is about the words alone.
+    """
+    text = (text or "").strip()
+    if not text:
+        raise ActionError(
+            "Give me the text to classify. If it is a comment, tell me what post it "
+            "was under — that usually decides the verdict."
+        )
+
+    from src.classifiers.committee.orchestrator import CommitteeOrchestrator
+    from src.classifiers.context_bundle import ContextBundle
+    from src.classifiers.group_resolver import GroupResolver
+
+    parent = (post_text or "").strip()
+    groups: list[str] = []
+    if parent:
+        # resolve_all, not resolve: the devil-worship libel is aimed at Yazidis and
+        # Christians both, and a post can concern more than one community.
+        groups = await GroupResolver(session).resolve_all(parent)
+
+    result = await CommitteeOrchestrator(session).run(
+        ContextBundle(
+            comment_text=text,
+            parent_post_text=parent,
+            target_groups=groups,
+        )
+    )
+
+    trace = result.get("trace") or {}
+    lines = [
+        f"Verdict: {result['verdict']} (confidence {result['confidence']:.2f})",
+        f"Category: {result.get('category') or 'none'}   "
+        f"Severity: {result.get('severity', 0)}",
+    ]
+    if groups:
+        lines.append(f"Target group detected from the post: {groups[0]}")
+    elif parent:
+        lines.append("No target group detected in the post.")
+    else:
+        lines.append("No parent post given — judged on the words alone.")
+
+    hits = [h.get("matched") for h in (trace.get("lexicon_hits") or [])]
+    if hits:
+        lines.append(f"Dictionary terms matched: {', '.join(hits)}")
+    fired = [t.get("trope_id") for t in (trace.get("tropes_fired") or [])]
+    if fired:
+        lines.append(f"Patterns fired: {', '.join(fired)}")
+    if trace.get("exemption"):
+        lines.append(
+            f"Automatic flag withheld: {trace['exemption']['signal']} — sent for review"
+        )
+    if result.get("committee_disagreement"):
+        lines.append("The specialist and critic disagreed, so a human decides.")
+
+    specialist = (trace.get("specialist") or {})
+    if specialist.get("rationale"):
+        lines.append(f"Reasoning: {specialist['rationale']}")
+
+    return "\n".join(lines)
+
+
+async def _test_browser(session: AsyncSession, **_) -> str:
+    """Actually launch the browser and say what happened.
+
+    Distinct from `health`, which reports a check result. This starts a browser,
+    which is the only thing that answers whether collection can run at all.
+    """
+    from src.browsers.camoufox_worker import BrowserUnavailable, CamoufoxWorker
+
+    # A throwaway identity: this launches a browser to see whether it launches, and
+    # must not touch a worker account's saved session.
+    worker = CamoufoxWorker("facebook", account_id="ankedo-browser-test")
+    try:
+        await worker.start()
+    except BrowserUnavailable as exc:
+        return (
+            f"The browser will not start: {exc}\n"
+            "Collection cannot run until it does. Ask me to repair the browser, or "
+            "run `ankedo doctor` on the machine for the full cause."
+        )
+    except Exception as exc:  # noqa: BLE001 — any failure here is the answer
+        return f"The browser failed to start: {type(exc).__name__}: {str(exc)[:200]}"
+
+    try:
+        return "The browser started and closed cleanly. Collection can run."
+    finally:
+        try:
+            await worker.stop()
+        except Exception:  # noqa: BLE001, S110 — a failed close is not the answer
+            pass
+
+
+async def _collect_now(session: AsyncSession, **_) -> str:
+    """Run one collection pass immediately, instead of waiting for the next cycle."""
+    from src.browsers.camoufox_worker import BrowserUnavailable
+    from src.core.collection_runner import CollectionRunner
+
+    try:
+        stats = await CollectionRunner(session).run()
+    except BrowserUnavailable as exc:
+        raise ActionError(
+            f"No browser, so nothing can be collected: {exc}. Ask me to repair the "
+            "browser first."
+        ) from exc
+
+    if stats is None:
+        return "The collection pass did not run."
+
+    scanned = getattr(stats, "posts_scanned", 0)
+    comments = getattr(stats, "comments_scanned", 0)
+    if not scanned and not comments:
+        return (
+            "Collection ran and found nothing. Either no account is due yet, or no "
+            "accounts are being tracked — ask me for the configuration to check."
+        )
+    return (
+        f"Collected {scanned} posts and {comments} comments. They are queued for "
+        "classification and will be judged on the next cycle."
+    )
+
+
 ACTIONS: dict[str, Action] = {
     a.name: a
     for a in [
@@ -223,8 +354,16 @@ ACTIONS: dict[str, Action] = {
         Action("health", "Run the system health checks", False, _health, {}),
         Action("set_config", "Change one configuration value", True, _set_config,
                {"key": f"one of: {', '.join(SETTABLE_KEYS)}", "value": "the new value"}),
+        Action("classify", "Judge a piece of text for hate speech right now", False,
+               _classify,
+               {"text": "the comment or post to judge",
+                "post_text": "the post it was replying to, if it is a comment"}),
+        Action("test_browser", "Launch the browser and report whether it works", False,
+               _test_browser, {}),
         Action("repair", "Fix a broken tool, e.g. the browser", True, _repair,
                {"what": "browser, dependencies, directories or env_file"}),
+        Action("collect_now", "Run one collection pass immediately", True,
+               _collect_now, {}),
     ]
 }
 

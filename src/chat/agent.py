@@ -104,6 +104,33 @@ class ChatReply:
     action_run: str | None = None
 
 
+def what_i_can_do() -> str:
+    """A deterministic answer for when the model produced nothing usable.
+
+    "I am not sure what you need" is a dead end, and it is what the operator got
+    after asking the agent to test the browser and report some hate speech — a
+    compound request the model routed to `reply` and then left empty. Two model
+    attempts had already failed at that point, so a third would not help; what the
+    operator needs is the list of things they can actually ask for.
+
+    Built from the registry rather than written out, so an action added tomorrow
+    appears here without anyone remembering to update a sentence.
+    """
+    lines = [
+        "I could not tell which of these you wanted — ask me for one directly:",
+        "",
+    ]
+    for name, action in ACTIONS.items():
+        mark = "  (asks you to confirm first)" if action.mutating else ""
+        lines.append(f"  • {name} — {action.description}{mark}")
+    lines.append("")
+    lines.append(
+        'For example: "classify this text: ..." or "test the browser" or '
+        '"stats for the last 30 days".'
+    )
+    return "\n".join(lines)
+
+
 class ChatAgent:
     def __init__(
         self,
@@ -227,20 +254,28 @@ class ChatAgent:
                     "agent for Arabic and Kurdish social media. Answer the operator "
                     "directly and briefly in `message`. Plain text, no markdown. "
                     "Reply in the operator's language.\n\n"
-                    "You are answering from conversation alone. You have NOT looked "
-                    "anything up and you cannot see the database. If the operator "
-                    "asked for a count, a statistic, a date, or any record, say you "
-                    "could not retrieve it and ask them to repeat the question. Never "
-                    "state a figure. A number you invent here would be read as a "
+                    "For THIS reply only, no lookup was performed — you are "
+                    "answering from the conversation. If the operator asked for a "
+                    "count, a statistic, a date or any record, say you could not "
+                    "retrieve it just now and ask them to put the question again. "
+                    "Never state a figure: a number invented here would be read as a "
                     "measurement of real-world hate speech.\n\n"
-                    "Never claim to have performed an action, and never reveal API "
+                    "That is a limit on this one reply, NOT on what you can do. You "
+                    "run actions — collection passes, classification, health checks, "
+                    "browser tests, configuration changes — and Python performs them "
+                    "and reports back. Do not tell the operator you are unable to act, "
+                    "and never tell them some other team or developer does it "
+                    "instead; you are the agent they installed. When a request needs "
+                    "an action, say which one and invite them to ask for it:\n\n"
+                    "{catalogue}\n\n"
+                    "Never claim to have already performed one, and never reveal API "
                     "keys or tokens."
-                ),
+                ).format(catalogue=catalogue()),
             )
         except LLMError as exc:
             log.warning("Plain reply failed", error=str(exc))
             return "I could not put that into words — ask me again?"
-        return answer.message.strip() or "I am not sure what you need."
+        return answer.message.strip() or what_i_can_do()
 
     async def confirm(self, pending: dict) -> ChatReply:
         """Run a mutation the operator has agreed to.

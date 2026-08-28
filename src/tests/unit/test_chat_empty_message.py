@@ -145,4 +145,11 @@ async def test_the_retry_is_told_it_cannot_see_the_database(session):
 
     retry_prompt = llm.instructions[1].lower()
     assert "never state a figure" in retry_prompt
-    assert "cannot see the database" in retry_prompt
+    assert "no lookup was performed" in retry_prompt
+
+    # The other half, learned when this prompt over-corrected. Told only what it
+    # could not do, the model generalised to "I have no authority to execute actual
+    # actions" and told the operator that a developer team does it instead. The limit
+    # is on this reply, not on the agent.
+    assert "not on what you can do" in retry_prompt
+    assert "unable to act" in retry_prompt
